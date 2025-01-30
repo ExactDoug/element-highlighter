@@ -8,7 +8,7 @@
 // @grant        GM_registerMenuCommand
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // Create overlay element
@@ -63,49 +63,210 @@
     // Function to process SVG elements
     function processSVG(svg) {
         try {
-            // Preserve explicit width/height attributes
-            const width = svg.getAttribute('width');
-            const height = svg.getAttribute('height');
-            const style = svg.getAttribute('style');
+            // Helper function to determine if SVG is a header/masthead logo
+            function isHeaderLogo(svg) {
+                const parent = svg.parentElement;
+                return (
+                    // Check common header/masthead indicators
+                    (parent.closest('header') ||
+                        parent.closest('[role="banner"]') ||
+                        parent.closest('.navbar') ||
+                        parent.closest('#navbar') ||
+                        parent.closest('[class*="header"]') ||
+                        parent.closest('[class*="nav"]')) &&
+                    // Additional logo indicators
+                    (svg.classList.toString().toLowerCase().includes('logo') ||
+                        parent.classList.toString().toLowerCase().includes('logo') ||
+                        (parent.tagName === 'A' && parent.href && parent.href.includes('/home')) ||
+                        parent.getAttribute('aria-label')?.toLowerCase().includes('logo') ||
+                        parent.getAttribute('alt')?.toLowerCase().includes('logo'))
+                );
+            }
+
+            // Early handling for header logos
+            if (isHeaderLogo(svg)) {
+                // Get parent header/container dimensions
+                const headerHeight = svg.closest('header, [role="banner"], .navbar, #navbar')?.getBoundingClientRect().height || 64;
+
+                // Calculate logo dimensions (typically 50-75% of header height)
+                const targetHeight = Math.min(headerHeight * 0.6, 40); // Cap at 40px
+                const currentRect = svg.getBoundingClientRect();
+                const aspectRatio = currentRect.width / currentRect.height;
+                const targetWidth = targetHeight * aspectRatio;
+
+                // Apply dimensions
+                svg.style.height = `${targetHeight}px`;
+                svg.style.width = `${targetWidth}px`;
+                svg.style.minHeight = `${targetHeight}px`; // Prevent collapse
+                svg.style.minWidth = `${targetWidth}px`;
+
+                // Ensure viewBox
+                if (!svg.getAttribute('viewBox') && currentRect.width && currentRect.height) {
+                    svg.setAttribute('viewBox', `0 0 ${currentRect.width} ${currentRect.height}`);
+                }
+
+                return svg;
+            }
+
+            // Rest of the existing SVG processing code for non-icon SVGs...
+            // Helper function to convert various units to pixels
+            function toPixels(value, parentDimension = 0) {
+                if (!value) return null;
+                // Remove all spaces
+                value = value.trim();
+
+                // Handle percentages
+                if (value.endsWith('%')) {
+                    return (parseFloat(value) / 100) * parentDimension;
+                }
+
+                // Handle px
+                if (value.endsWith('px')) {
+                    return parseFloat(value);
+                }
+
+                // Handle rem/em
+                if (value.endsWith('rem')) {
+                    return parseFloat(value) * parseFloat(getComputedStyle(document.documentElement).fontSize);
+                }
+                if (value.endsWith('em')) {
+                    return parseFloat(value) * parseFloat(getComputedStyle(svg.parentElement).fontSize);
+                }
+
+                // Handle raw numbers
+                if (!isNaN(value)) {
+                    return parseFloat(value);
+                }
+
+                return null;
+            }
+
+            // Get parent dimensions
+            const parentRect = svg.parentElement.getBoundingClientRect();
+            const parentStyle = window.getComputedStyle(svg.parentElement);
             const computedStyle = window.getComputedStyle(svg);
+            const svgRect = svg.getBoundingClientRect();
 
-            // If explicit attributes exist, keep them
-            if (width) svg.setAttribute('width', width);
-            if (height) svg.setAttribute('height', height);
+            // Gather all possible dimension sources
+            const dimensions = {
+                // Direct attributes
+                attribute: {
+                    width: svg.getAttribute('width'),
+                    height: svg.getAttribute('height')
+                },
+                // Inline styles
+                style: {
+                    width: svg.style.width,
+                    height: svg.style.height
+                },
+                // Computed styles
+                computed: {
+                    width: computedStyle.width,
+                    height: computedStyle.height
+                },
+                // Bounding client rect
+                rect: {
+                    width: svgRect.width,
+                    height: svgRect.height
+                },
+                // Parent dimensions
+                parent: {
+                    width: parentRect.width,
+                    height: parentRect.height
+                },
+                // ViewBox if present
+                viewBox: svg.getAttribute('viewBox')?.split(' ').map(Number)
+            };
 
-            // If no explicit attributes but has style dimensions
-            if (!width && !height && style) {
-                if (style.includes('width') || style.includes('height')) {
-                    svg.setAttribute('style', style);
+            // Determine if SVG is meant to be responsive
+            const isResponsive = computedStyle.width.includes('%') ||
+                parentStyle.display === 'flex' ||
+                parentStyle.display === 'grid' ||
+                svg.style.width === '100%' ||
+                svg.classList.contains('w-auto') ||
+                svg.classList.contains('h-auto');
+
+            // Get actual dimensions
+            let finalWidth = null;
+            let finalHeight = null;
+
+            if (isResponsive) {
+                // Calculate responsive dimensions based on parent
+                if (dimensions.rect.width && dimensions.rect.height) {
+                    const aspectRatio = dimensions.rect.width / dimensions.rect.height;
+                    // Set width as percentage of parent
+                    const widthPercent = (dimensions.rect.width / dimensions.parent.width) * 100;
+                    finalWidth = `${widthPercent}%`;
+                    // Set height using aspect ratio
+                    finalHeight = dimensions.rect.height;
                 }
+            } else {
+                // Try to get explicit dimensions in this priority order
+                finalWidth = toPixels(dimensions.attribute.width, dimensions.parent.width) ||
+                    toPixels(dimensions.style.width, dimensions.parent.width) ||
+                    toPixels(dimensions.computed.width, dimensions.parent.width) ||
+                    dimensions.rect.width ||
+                    (dimensions.viewBox && dimensions.viewBox[2]);
+
+                toPixels(dimensions.style.height, dimensions.parent.height) ||
+                    toPixels(dimensions.computed.height, dimensions.parent.height) ||
+                    dimensions.rect.height ||
+                    (dimensions.viewBox && dimensions.viewBox[3]);
             }
 
-            // If no explicit dimensions at all, use computed values
-            if (!width && !height && !style) {
-                const computedWidth = computedStyle.width;
-                const computedHeight = computedStyle.height;
-                if (computedWidth !== 'auto' && computedHeight !== 'auto') {
-                    svg.setAttribute('width', computedWidth);
-                    svg.setAttribute('height', computedHeight);
-                }
+            // Ensure we have valid dimensions
+            if (!finalWidth || !finalHeight) {
+                // Fall back to actual rendered dimensions
+                finalWidth = dimensions.rect.width || 100;
+                finalHeight = dimensions.rect.height || 100;
             }
 
-            // Ensure viewBox is present
-            if (!svg.getAttribute('viewBox')) {
-                let viewBoxWidth = svg.width.baseVal.value || parseInt(computedStyle.width);
-                let viewBoxHeight = svg.height.baseVal.value || parseInt(computedStyle.height);
-                if (viewBoxWidth && viewBoxHeight) {
-                    svg.setAttribute('viewBox', `0 0 ${viewBoxWidth} ${viewBoxHeight}`);
+            // Apply dimensions
+            if (isResponsive) {
+                if (typeof finalWidth === 'string' && finalWidth.endsWith('%')) {
+                    svg.style.width = finalWidth;
+                    svg.style.height = 'auto';
+                } else {
+                    // If we couldn't calculate percentage, maintain aspect ratio
+                    svg.style.width = '100%';
+                    svg.style.height = 'auto';
                 }
+            } else {
+                svg.style.width = `${finalWidth}px`;
+                svg.style.height = `${finalHeight}px`;
             }
 
-            // Process internal image references
+            // Ensure viewBox exists
+            if (!dimensions.viewBox && finalWidth && finalHeight) {
+                svg.setAttribute('viewBox', `0 0 ${finalWidth} ${finalHeight}`);
+            }
+
+            // Ensure preserveAspectRatio is set appropriately
+            if (!svg.hasAttribute('preserveAspectRatio')) {
+                svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+            }
+
+            // Process any nested SVG elements
+            svg.querySelectorAll('svg').forEach(nestedSvg => {
+                processSVG(nestedSvg);
+            });
+
+            // Process any image elements
             svg.querySelectorAll('image').forEach(image => {
                 const href = image.getAttribute('href') || image.getAttribute('xlink:href');
                 if (href) {
                     image.setAttribute('href', toAbsoluteUrl(href));
                 }
             });
+
+            // For debugging
+            console.debug('SVG processed:', {
+                isResponsive,
+                dimensions,
+                finalWidth,
+                finalHeight
+            });
+
         } catch (e) {
             console.error('SVG processing failed:', e);
         }
@@ -285,7 +446,7 @@
         const withImages = processImages(element);
 
         // Then process styles
-        const {element: processed, css: basicCSS} = processStyles(withImages);
+        const { element: processed, css: basicCSS } = processStyles(withImages);
 
         const content = `<!DOCTYPE html>
 <html>
