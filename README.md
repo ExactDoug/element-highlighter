@@ -29,6 +29,22 @@ A userscript that allows you to visually select and download elements from web p
 - Converts external CSS to inline styles
 - Includes minimal base CSS for consistency
 
+### Additional Features
+- Utility function to convert relative URL to absolute
+- Function to process external CSS background images
+- Function to process SVG elements
+- Function to process image elements
+- Function to get essential styles
+- Function to process styles
+- Function to show notifications
+- Function to deactivate highlighter
+- Function to activate highlighter
+- Function to toggle highlighter
+- Function to download element
+- Function to handle mouse move
+- Function to handle click
+- Function to handle key press
+
 ## Installation
 
 1. Install a userscript manager:
@@ -100,5 +116,6 @@ ExactDoug (http://exactpartners.com/)
 ## Version History
 
 - 0.3 - CSS handling and simplification
+- 0.4 - Added utility functions for URL conversion, CSS background images, SVG processing, image elements, styles, notifications, highlighter activation/deactivation, element downloading, mouse move, click, and key press handling
 - 0.2 - Enhanced image processing
 - 0.1 - Initial release with basic functionality
