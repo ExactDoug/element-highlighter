@@ -875,6 +875,16 @@
         resizeObserver: null,
 
         /**
+         * MutationObserver for tracking DOM changes
+         */
+        mutationObserver: null,
+        
+        /**
+         * Detected scroll containers on the page
+         */
+        scrollContainers: [],
+
+        /**
          * Initializes the selection manager
          */
         init() {
@@ -882,6 +892,10 @@
             this.createHighlightOverlay();
             // Initialize resize observer
             this.initResizeObserver();
+            // Initialize mutation observer
+            this.initMutationObserver();
+            // Detect scroll containers
+            this.detectScrollContainers();
         },
 
         /**
@@ -896,6 +910,7 @@
             overlay.style.border = '2px dashed #FFC107';
             overlay.style.display = 'none';
             overlay.style.zIndex = '9999';
+            overlay.style.willChange = 'transform, top, left, width, height'; // Optimization hint
             document.body.appendChild(overlay);
             this.highlightOverlay = overlay;
         },
@@ -911,6 +926,74 @@
             } else {
                 console.warn('ResizeObserver not supported in this browser. Some element tracking features may not work correctly.');
             }
+        },
+
+        /**
+         * Initialize the MutationObserver for tracking DOM changes
+         */
+        initMutationObserver() {
+            if (typeof MutationObserver !== 'undefined') {
+                this.mutationObserver = new MutationObserver(mutations => {
+                    // Only update on significant changes to avoid performance issues
+                    const significantChange = mutations.some(mutation => 
+                        mutation.type === 'childList' && 
+                        (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0) ||
+                        mutation.type === 'attributes' && 
+                        (mutation.attributeName === 'style' || mutation.attributeName === 'class')
+                    );
+                    
+                    if (significantChange) {
+                        // Re-detect scroll containers as they might have changed
+                        this.detectScrollContainers();
+                        // Update positions of all indicators
+                        this.updateAllIndicatorPositions();
+                    }
+                });
+                
+                // Start observing the document with configured parameters
+                this.mutationObserver.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['style', 'class']
+                });
+            } else {
+                console.warn('MutationObserver not supported in this browser. Dynamic content tracking may not work correctly.');
+            }
+        },
+        
+        /**
+         * Detects and tracks scrollable containers on the page
+         */
+        detectScrollContainers() {
+            // Clear previous scroll containers
+            this.scrollContainers.forEach(container => {
+                if (container !== window && container.removeEventListener) {
+                    container.removeEventListener('scroll', this.updateAllIndicatorPositions.bind(this));
+                }
+            });
+            
+            this.scrollContainers = [window]; // Always include window
+            
+            // Find all scrollable elements
+            const potentialContainers = document.querySelectorAll('*');
+            potentialContainers.forEach(el => {
+                const style = window.getComputedStyle(el);
+                const isScrollable = (
+                    (style.overflow === 'auto' || style.overflow === 'scroll' ||
+                     style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                    // Only consider elements with actual content that can scroll
+                    (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)
+                );
+                
+                if (isScrollable) {
+                    this.scrollContainers.push(el);
+                    // Attach scroll listener to this container
+                    el.addEventListener('scroll', this.updateAllIndicatorPositions.bind(this), { passive: true });
+                }
+            });
+            
+            console.debug('Detected scrollable containers:', this.scrollContainers.length);
         },
 
         /**
@@ -957,9 +1040,9 @@
             const indicator = document.createElement('div');
             indicator.className = 'element-highlighter-indicator element-highlighter-indicator-' + id;
             indicator.dataset.forElement = id;
-            indicator.style.position = 'absolute';  // Changed from fixed to absolute for proper scrolling
-            indicator.style.top = (window.scrollY + rect.top) + 'px';
-            indicator.style.left = (window.scrollX + rect.left) + 'px';
+            indicator.style.position = 'fixed';  // Use fixed positioning to follow viewport
+            indicator.style.top = rect.top + 'px';
+            indicator.style.left = rect.left + 'px';
             indicator.style.width = rect.width + 'px';
             indicator.style.height = rect.height + 'px';
             indicator.style.transition = 'all 0.05s ease';  // Smooth transition for scrolling
@@ -967,12 +1050,10 @@
             indicator.style.pointerEvents = 'none';
             indicator.style.zIndex = '9998';
             indicator.style.boxSizing = 'border-box';
+            indicator.style.willChange = 'transform, top, left, width, height'; // Optimization hint
 
-            // Store original element's position data for smoother updates
-            indicator.dataset.elementTop = rect.top;
-            indicator.dataset.elementLeft = rect.left;
-            indicator.dataset.elementWidth = rect.width;
-            indicator.dataset.elementHeight = rect.height;
+            // Store reference to the element for updates
+            indicator.targetElement = element;
 
             // Add number badge
             const badge = document.createElement('div');
@@ -997,21 +1078,35 @@
             indicator.appendChild(badge);
             document.body.appendChild(indicator);
 
-            // Update selection indicator when page scrolls
+            // Create throttled update function for better performance
+            const throttleMs = 16; // ~60fps
+            let lastUpdateTime = 0;
+            let pendingUpdate = false;
+
             const updateIndicatorPosition = () => {
-                const newRect = element.getBoundingClientRect();
+                const now = Date.now();
+                
+                // Skip if we updated very recently
+                if (now - lastUpdateTime < throttleMs) {
+                    if (!pendingUpdate) {
+                        pendingUpdate = true;
+                        setTimeout(() => {
+                            updateIndicatorPosition();
+                            pendingUpdate = false;
+                        }, throttleMs);
+                    }
+                    return;
+                }
+                
+                lastUpdateTime = now;
 
                 // Only update if element is still in the DOM
                 if (document.body.contains(element)) {
-                    // Update dataset values for reference
-                    indicator.dataset.elementTop = newRect.top;
-                    indicator.dataset.elementLeft = newRect.left;
-                    indicator.dataset.elementWidth = newRect.width;
-                    indicator.dataset.elementHeight = newRect.height;
-
-                    // Calculate actual position accounting for scroll
-                    indicator.style.top = (window.scrollY + newRect.top) + 'px';
-                    indicator.style.left = (window.scrollX + newRect.left) + 'px';
+                    const newRect = element.getBoundingClientRect();
+                    
+                    // Update position and dimensions
+                    indicator.style.top = newRect.top + 'px';
+                    indicator.style.left = newRect.left + 'px';
                     indicator.style.width = newRect.width + 'px';
                     indicator.style.height = newRect.height + 'px';
                 }
@@ -1026,8 +1121,14 @@
                 }
             }
 
-            // Add scroll event listener
-            window.addEventListener('scroll', updateIndicatorPosition);
+            // Add scroll event listeners to all scroll containers
+            this.scrollContainers.forEach(container => {
+                if (container === window) {
+                    window.addEventListener('scroll', updateIndicatorPosition, { passive: true });
+                } else if (container.addEventListener) {
+                    container.addEventListener('scroll', updateIndicatorPosition, { passive: true });
+                }
+            });
 
             // Store scroll handler reference to remove it later
             indicator.scrollHandler = updateIndicatorPosition;
@@ -1036,27 +1137,26 @@
 
         /**
          * Update positions of all indicators based on their elements
-         * Called by ResizeObserver and can be called manually
+         * Called by ResizeObserver, MutationObserver, scroll events, and can be called manually
          */
         updateAllIndicatorPositions() {
-            this.selectedElements.forEach(item => {
-                const element = item.element;
-                const id = item.id;
-                const indicator = document.querySelector(`.element-highlighter-indicator[data-for-element="${id}"]`);
-
-                if (indicator && document.body.contains(element)) {
-                    const rect = element.getBoundingClientRect();
-
-                    // Update position with scroll offset
-                    indicator.style.top = (window.scrollY + rect.top) + 'px';
-                    indicator.style.left = (window.scrollX + rect.left) + 'px';
-                    indicator.style.width = rect.width + 'px';
-                    indicator.style.height = rect.height + 'px';
-
-                    // Store updated values
-                    indicator.dataset.elementTop = rect.top;
-                    indicator.dataset.elementLeft = rect.left;
-                }
+            // Use requestAnimationFrame for smoother updates
+            requestAnimationFrame(() => {
+                this.selectedElements.forEach(item => {
+                    const element = item.element;
+                    const id = item.id;
+                    const indicator = document.querySelector(`.element-highlighter-indicator[data-for-element="${id}"]`);
+    
+                    if (indicator && document.body.contains(element)) {
+                        const rect = element.getBoundingClientRect();
+    
+                        // Update position using fixed positioning 
+                        indicator.style.top = rect.top + 'px';
+                        indicator.style.left = rect.left + 'px';
+                        indicator.style.width = rect.width + 'px';
+                        indicator.style.height = rect.height + 'px';
+                    }
+                });
             });
         },
 
@@ -1082,9 +1182,15 @@
             // Remove indicator
             const indicator = document.querySelector(`.element-highlighter-indicator[data-for-element="${id}"]`);
             if (indicator) {
-                // Remove scroll handler
+                // Remove scroll handler from all scroll containers
                 if (indicator.scrollHandler) {
-                    window.removeEventListener('scroll', indicator.scrollHandler);
+                    this.scrollContainers.forEach(container => {
+                        if (container === window) {
+                            window.removeEventListener('scroll', indicator.scrollHandler);
+                        } else if (container.removeEventListener) {
+                            container.removeEventListener('scroll', indicator.scrollHandler);
+                        }
+                    });
                 }
                 document.body.removeChild(indicator);
             }
@@ -1115,9 +1221,15 @@
             // Remove all indicators
             const indicators = document.querySelectorAll('.element-highlighter-indicator');
             indicators.forEach(indicator => {
-                // Remove scroll handler
+                // Remove scroll handler from all scroll containers
                 if (indicator.scrollHandler) {
-                    window.removeEventListener('scroll', indicator.scrollHandler);
+                    this.scrollContainers.forEach(container => {
+                        if (container === window) {
+                            window.removeEventListener('scroll', indicator.scrollHandler);
+                        } else if (container.removeEventListener) {
+                            container.removeEventListener('scroll', indicator.scrollHandler);
+                        }
+                    });
                 }
                 document.body.removeChild(indicator);
             });
@@ -1130,6 +1242,9 @@
                     // Observer might already be disconnected
                 }
             }
+
+            // Reinitialize ResizeObserver for future selections
+            this.initResizeObserver();
 
             // Clear array
             this.selectedElements = [];
@@ -1161,12 +1276,14 @@
             const element = this.selectedElements[index].element;
             const rect = element.getBoundingClientRect();
 
-            // Update highlight overlay
-            this.highlightOverlay.style.top = (window.scrollY + rect.top) + 'px';
-            this.highlightOverlay.style.left = (window.scrollX + rect.left) + 'px';
+            // Update highlight overlay with fixed positioning
+            this.highlightOverlay.style.position = 'fixed';
+            this.highlightOverlay.style.top = rect.top + 'px';
+            this.highlightOverlay.style.left = rect.left + 'px';
             this.highlightOverlay.style.width = rect.width + 'px';
             this.highlightOverlay.style.height = rect.height + 'px';
             this.highlightOverlay.style.display = 'block';
+            this.highlightOverlay.style.willChange = 'transform, top, left, width, height'; // Optimization hint
 
             // Scroll element into view if needed
             element.scrollIntoView({
@@ -1177,24 +1294,62 @@
             // Save reference to highlighted element
             this.highlightedElement = element;
 
-            // Add scroll event handler to update overlay position
+            // Create throttled update function
+            const throttleMs = 16; // ~60fps
+            let lastUpdateTime = 0;
+            let pendingUpdate = false;
+
             const updatePosition = () => {
+                const now = Date.now();
+                
+                // Skip if we updated very recently
+                if (now - lastUpdateTime < throttleMs) {
+                    if (!pendingUpdate) {
+                        pendingUpdate = true;
+                        setTimeout(() => {
+                            updatePosition();
+                            pendingUpdate = false;
+                        }, throttleMs);
+                    }
+                    return;
+                }
+                
+                lastUpdateTime = now;
+
                 if (!this.highlightedElement) return;
 
-                const newRect = this.highlightedElement.getBoundingClientRect();
-                this.highlightOverlay.style.top = (window.scrollY + newRect.top) + 'px';
-                this.highlightOverlay.style.left = (window.scrollX + newRect.left) + 'px';
-                this.highlightOverlay.style.width = newRect.width + 'px';
-                this.highlightOverlay.style.height = newRect.height + 'px';
+                // Use requestAnimationFrame for smoother updates
+                requestAnimationFrame(() => {
+                    if (document.body.contains(this.highlightedElement)) {
+                        const newRect = this.highlightedElement.getBoundingClientRect();
+                        this.highlightOverlay.style.top = newRect.top + 'px';
+                        this.highlightOverlay.style.left = newRect.left + 'px';
+                        this.highlightOverlay.style.width = newRect.width + 'px';
+                        this.highlightOverlay.style.height = newRect.height + 'px';
+                    }
+                });
             };
 
             // Remove previous scroll handler if exists
             if (this.highlightScrollHandler) {
-                window.removeEventListener('scroll', this.highlightScrollHandler);
+                this.scrollContainers.forEach(container => {
+                    if (container === window) {
+                        window.removeEventListener('scroll', this.highlightScrollHandler);
+                    } else if (container.removeEventListener) {
+                        container.removeEventListener('scroll', this.highlightScrollHandler);
+                    }
+                });
             }
 
-            // Add new scroll handler
-            window.addEventListener('scroll', updatePosition);
+            // Add new scroll handler to all scroll containers
+            this.scrollContainers.forEach(container => {
+                if (container === window) {
+                    window.addEventListener('scroll', updatePosition, { passive: true });
+                } else if (container.addEventListener) {
+                    container.addEventListener('scroll', updatePosition, { passive: true });
+                }
+            });
+            
             this.highlightScrollHandler = updatePosition;
         }
     };
