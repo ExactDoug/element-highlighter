@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Element Highlighter and Downloader
 // @namespace    http://exactpartners.com/
-// @version      0.4
-// @description  Highlight and download webpage elements with simplified CSS
+// @version      0.5
+// @description  Highlight and download webpage elements with simplified CSS and multiple selection
 // @author       ExactDoug
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -479,6 +479,21 @@
         overlay: null,
 
         /**
+         * The selection panel that displays selected elements
+         */
+        selectionPanel: null,
+
+        /**
+         * The download button for downloading all selected elements
+         */
+        downloadButton: null,
+
+        /**
+         * The clear button for clearing all selections
+         */
+        clearButton: null,
+
+        /**
          * Creates the selection overlay
          * @returns {HTMLElement} - The created overlay element
          */
@@ -492,6 +507,267 @@
             document.body.appendChild(overlay);
             this.overlay = overlay;
             return overlay;
+        },
+
+        /**
+         * Creates the selection panel that shows selected elements
+         * @returns {HTMLElement} - The created selection panel
+         */
+        createSelectionPanel() {
+            // Create panel container
+            const panel = document.createElement('div');
+            panel.id = 'elementHighlighterPanel';
+            panel.style.position = 'fixed';
+            panel.style.top = '10px';
+            panel.style.right = '10px';
+            panel.style.width = '300px';
+            panel.style.maxHeight = '80vh';
+            panel.style.overflowY = 'auto';
+            panel.style.backgroundColor = '#fff';
+            panel.style.border = '1px solid #ccc';
+            panel.style.borderRadius = '5px';
+            panel.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.1)';
+            panel.style.zIndex = '10001';
+            panel.style.padding = '10px';
+            panel.style.display = 'none';
+            panel.style.fontFamily = 'Arial, sans-serif';
+            panel.style.fontSize = '14px';
+
+            // Create header
+            const header = document.createElement('div');
+            header.style.display = 'flex';
+            header.style.justifyContent = 'space-between';
+            header.style.alignItems = 'center';
+            header.style.marginBottom = '10px';
+            header.style.padding = '5px 0';
+            header.style.borderBottom = '1px solid #eee';
+
+            const title = document.createElement('h3');
+            title.textContent = 'Selected Elements';
+            title.style.margin = '0';
+            title.style.fontSize = '16px';
+            title.style.fontWeight = 'bold';
+
+            // Create minimize button
+            const minimizeBtn = document.createElement('button');
+            minimizeBtn.textContent = '−';
+            minimizeBtn.style.background = 'none';
+            minimizeBtn.style.border = 'none';
+            minimizeBtn.style.fontSize = '16px';
+            minimizeBtn.style.cursor = 'pointer';
+            minimizeBtn.style.padding = '0 5px';
+            minimizeBtn.title = 'Minimize panel';
+
+            minimizeBtn.addEventListener('click', () => {
+                const content = panel.querySelector('#elementHighlighterPanelContent');
+                const buttonContainer = panel.querySelector('#elementHighlighterButtonContainer');
+
+                if (content.style.display === 'none') {
+                    content.style.display = 'block';
+                    buttonContainer.style.display = 'flex';
+                    minimizeBtn.textContent = '−';
+                    minimizeBtn.title = 'Minimize panel';
+                } else {
+                    content.style.display = 'none';
+                    buttonContainer.style.display = 'none';
+                    minimizeBtn.textContent = '+';
+                    minimizeBtn.title = 'Expand panel';
+                }
+            });
+
+            header.appendChild(title);
+            header.appendChild(minimizeBtn);
+            panel.appendChild(header);
+
+            // Create content container
+            const content = document.createElement('div');
+            content.id = 'elementHighlighterPanelContent';
+            content.style.marginBottom = '10px';
+            panel.appendChild(content);
+
+            // Create button container
+            const buttonContainer = document.createElement('div');
+            buttonContainer.id = 'elementHighlighterButtonContainer';
+            buttonContainer.style.display = 'flex';
+            buttonContainer.style.justifyContent = 'space-between';
+            buttonContainer.style.gap = '5px';
+
+            // Create download button
+            const downloadBtn = document.createElement('button');
+            downloadBtn.textContent = 'Download All';
+            downloadBtn.style.backgroundColor = '#4CAF50';
+            downloadBtn.style.color = 'white';
+            downloadBtn.style.border = 'none';
+            downloadBtn.style.padding = '8px 12px';
+            downloadBtn.style.borderRadius = '4px';
+            downloadBtn.style.cursor = 'pointer';
+            downloadBtn.style.flex = '1';
+            downloadBtn.style.fontWeight = 'bold';
+            this.downloadButton = downloadBtn;
+
+            // Create clear button
+            const clearBtn = document.createElement('button');
+            clearBtn.textContent = 'Clear All';
+            clearBtn.style.backgroundColor = '#f44336';
+            clearBtn.style.color = 'white';
+            clearBtn.style.border = 'none';
+            clearBtn.style.padding = '8px 12px';
+            clearBtn.style.borderRadius = '4px';
+            clearBtn.style.cursor = 'pointer';
+            clearBtn.style.flex = '1';
+            this.clearButton = clearBtn;
+
+            buttonContainer.appendChild(downloadBtn);
+            buttonContainer.appendChild(clearBtn);
+            panel.appendChild(buttonContainer);
+
+            // Make panel draggable
+            let isDragging = false;
+            let offsetX, offsetY;
+
+            header.style.cursor = 'move';
+            header.addEventListener('mousedown', (e) => {
+                if (e.target === minimizeBtn) return;
+
+                isDragging = true;
+                offsetX = e.clientX - panel.getBoundingClientRect().left;
+                offsetY = e.clientY - panel.getBoundingClientRect().top;
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+
+                panel.style.left = (e.clientX - offsetX) + 'px';
+                panel.style.top = (e.clientY - offsetY) + 'px';
+                panel.style.right = 'auto';
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+
+            document.body.appendChild(panel);
+            this.selectionPanel = panel;
+
+            return panel;
+        },
+
+        /**
+         * Updates the selection panel with the current selected elements
+         * @param {Array} selectedElements - Array of selected elements
+         */
+        updateSelectionPanel(selectedElements) {
+            const content = this.selectionPanel.querySelector('#elementHighlighterPanelContent');
+            content.innerHTML = '';
+
+            if (selectedElements.length === 0) {
+                const emptyMessage = document.createElement('p');
+                emptyMessage.textContent = 'No elements selected';
+                emptyMessage.style.color = '#999';
+                emptyMessage.style.textAlign = 'center';
+                emptyMessage.style.padding = '10px';
+                content.appendChild(emptyMessage);
+
+                // Hide the panel if there are no selected elements and highlighter is not active
+                if (!Highlighter.isActive) {
+                    this.selectionPanel.style.display = 'none';
+                }
+
+                return;
+            }
+
+            // Create element list
+            const list = document.createElement('ul');
+            list.style.listStyle = 'none';
+            list.style.padding = '0';
+            list.style.margin = '0';
+
+            selectedElements.forEach((item, index) => {
+                const listItem = document.createElement('li');
+                listItem.style.padding = '8px';
+                listItem.style.borderBottom = '1px solid #eee';
+                listItem.style.display = 'flex';
+                listItem.style.justifyContent = 'space-between';
+                listItem.style.alignItems = 'center';
+
+                // Create element info
+                const elementInfo = document.createElement('div');
+                elementInfo.style.flex = '1';
+                elementInfo.style.overflow = 'hidden';
+                elementInfo.style.textOverflow = 'ellipsis';
+                elementInfo.style.whiteSpace = 'nowrap';
+
+                const tagName = document.createElement('span');
+                tagName.textContent = item.element.tagName.toLowerCase();
+                tagName.style.fontWeight = 'bold';
+                tagName.style.color = '#0066cc';
+
+                const className = item.element.className ? `.${item.element.className.split(' ')[0]}` : '';
+                const idName = item.element.id ? `#${item.element.id}` : '';
+
+                const elementDesc = document.createElement('span');
+                elementDesc.textContent = `${idName}${className}`;
+                elementDesc.style.color = '#666';
+                elementDesc.style.fontSize = '12px';
+
+                elementInfo.appendChild(tagName);
+                if (idName || className) {
+                    elementInfo.appendChild(document.createTextNode(' '));
+                    elementInfo.appendChild(elementDesc);
+                }
+
+                // Create highlight button
+                const highlightBtn = document.createElement('button');
+                highlightBtn.innerHTML = '👁️';
+                highlightBtn.title = 'Highlight element';
+                highlightBtn.style.background = 'none';
+                highlightBtn.style.border = 'none';
+                highlightBtn.style.cursor = 'pointer';
+                highlightBtn.style.padding = '0 5px';
+                highlightBtn.style.fontSize = '14px';
+
+                highlightBtn.addEventListener('click', () => {
+                    SelectionManager.highlightSelectedElement(index);
+                });
+
+                // Create remove button
+                const removeBtn = document.createElement('button');
+                removeBtn.innerHTML = '✕';
+                removeBtn.title = 'Remove from selection';
+                removeBtn.style.background = 'none';
+                removeBtn.style.border = 'none';
+                removeBtn.style.cursor = 'pointer';
+                removeBtn.style.padding = '0 5px';
+                removeBtn.style.fontSize = '14px';
+                removeBtn.style.color = '#f44336';
+
+                removeBtn.addEventListener('click', () => {
+                    SelectionManager.removeElementFromSelection(index);
+                });
+
+                listItem.appendChild(elementInfo);
+                listItem.appendChild(highlightBtn);
+                listItem.appendChild(removeBtn);
+                list.appendChild(listItem);
+
+                // Add hover effect
+                listItem.addEventListener('mouseenter', () => {
+                    listItem.style.backgroundColor = '#f5f5f5';
+                });
+
+                listItem.addEventListener('mouseleave', () => {
+                    listItem.style.backgroundColor = '';
+                });
+            });
+
+            content.appendChild(list);
+
+            // Show selection count in title
+            const title = this.selectionPanel.querySelector('h3');
+            title.textContent = `Selected Elements (${selectedElements.length})`;
+
+            // Show the panel if it's hidden
+            this.selectionPanel.style.display = 'block';
         },
 
         /**
@@ -512,6 +788,253 @@
             div.style.zIndex = '10001';
             document.body.appendChild(div);
             setTimeout(() => document.body.removeChild(div), duration);
+        },
+
+        /**
+         * Hides the selection panel
+         */
+        hideSelectionPanel() {
+            if (this.selectionPanel) {
+                this.selectionPanel.style.display = 'none';
+            }
+        }
+    };
+
+    /**
+     * Selection Manager Module
+     * Handles the management of selected elements
+     */
+    const SelectionManager = {
+        /**
+         * Array of selected elements with metadata
+         */
+        selectedElements: [],
+
+        /**
+         * The currently highlighted element from the selection panel
+         */
+        highlightedElement: null,
+
+        /**
+         * The current highlight overlay for selected elements
+         */
+        highlightOverlay: null,
+
+        /**
+         * Initializes the selection manager
+         */
+        init() {
+            // Create the highlight overlay for selection panel highlighting
+            this.createHighlightOverlay();
+        },
+
+        /**
+         * Creates the highlight overlay for selection panel interactions
+         */
+        createHighlightOverlay() {
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.pointerEvents = 'none';
+            overlay.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+            overlay.style.border = '2px dashed #FFC107';
+            overlay.style.display = 'none';
+            overlay.style.zIndex = '9999';
+            document.body.appendChild(overlay);
+            this.highlightOverlay = overlay;
+        },
+
+        /**
+         * Add an element to the selection
+         * @param {Element} element - The element to add
+         * @returns {boolean} - Whether the element was added successfully
+         */
+        addElementToSelection(element) {
+            // Check if element already exists in selection
+            const exists = this.selectedElements.some(item => item.element === element);
+            if (exists) {
+                UIManager.showNotification('Element already selected');
+                return false;
+            }
+
+            // Generate a unique ID for the element
+            const id = `element-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+            // Add temporary visual feedback
+            this.addSelectionIndicator(element, id);
+
+            // Add to selection array
+            this.selectedElements.push({
+                element: element,
+                id: id
+            });
+
+            // Update the selection panel
+            UIManager.updateSelectionPanel(this.selectedElements);
+
+            return true;
+        },
+
+        /**
+         * Adds a visual indicator to a selected element
+         * @param {Element} element - The element to mark
+         * @param {string} id - Unique ID for the element
+         */
+        addSelectionIndicator(element, id) {
+            // Calculate position
+            const rect = element.getBoundingClientRect();
+
+            // Create indicator
+            const indicator = document.createElement('div');
+            indicator.className = 'element-highlighter-indicator';
+            indicator.dataset.forElement = id;
+            indicator.style.position = 'absolute';
+            indicator.style.top = (window.scrollY + rect.top) + 'px';
+            indicator.style.left = (window.scrollX + rect.left) + 'px';
+            indicator.style.width = rect.width + 'px';
+            indicator.style.height = rect.height + 'px';
+            indicator.style.border = '2px solid #28a745';
+            indicator.style.pointerEvents = 'none';
+            indicator.style.zIndex = '9998';
+            indicator.style.boxSizing = 'border-box';
+
+            // Add number badge
+            const badge = document.createElement('div');
+            badge.style.position = 'absolute';
+            badge.style.top = '-10px';
+            badge.style.right = '-10px';
+            badge.style.width = '20px';
+            badge.style.height = '20px';
+            badge.style.borderRadius = '50%';
+            badge.style.backgroundColor = '#28a745';
+            badge.style.color = 'white';
+            badge.style.display = 'flex';
+            badge.style.justifyContent = 'center';
+            badge.style.alignItems = 'center';
+            badge.style.fontSize = '12px';
+            badge.style.fontWeight = 'bold';
+            badge.textContent = this.selectedElements.length + 1;
+
+            indicator.appendChild(badge);
+            document.body.appendChild(indicator);
+
+            // Update selection indicator when page scrolls
+            const updatePosition = () => {
+                const newRect = element.getBoundingClientRect();
+                indicator.style.top = (window.scrollY + newRect.top) + 'px';
+                indicator.style.left = (window.scrollX + newRect.left) + 'px';
+            };
+
+            // Add scroll event listener
+            window.addEventListener('scroll', updatePosition);
+
+            // Store scroll handler reference to remove it later
+            indicator.scrollHandler = updatePosition;
+        },
+
+        /**
+         * Remove an element from the selection by index
+         * @param {number} index - Index of the element in the selectedElements array
+         */
+        removeElementFromSelection(index) {
+            if (index < 0 || index >= this.selectedElements.length) return;
+
+            // Get element ID
+            const id = this.selectedElements[index].id;
+
+            // Remove indicator
+            const indicator = document.querySelector(`.element-highlighter-indicator[data-for-element="${id}"]`);
+            if (indicator) {
+                // Remove scroll handler
+                if (indicator.scrollHandler) {
+                    window.removeEventListener('scroll', indicator.scrollHandler);
+                }
+                document.body.removeChild(indicator);
+            }
+
+            // Remove from array
+            this.selectedElements.splice(index, 1);
+
+            // Update remaining indicators (badge numbers)
+            const indicators = document.querySelectorAll('.element-highlighter-indicator');
+            indicators.forEach((ind, i) => {
+                const badge = ind.querySelector('div');
+                if (badge) {
+                    badge.textContent = i + 1;
+                }
+            });
+
+            // Update the selection panel
+            UIManager.updateSelectionPanel(this.selectedElements);
+        },
+
+        /**
+         * Clears all selected elements
+         */
+        clearSelection() {
+            // Remove all indicators
+            const indicators = document.querySelectorAll('.element-highlighter-indicator');
+            indicators.forEach(indicator => {
+                // Remove scroll handler
+                if (indicator.scrollHandler) {
+                    window.removeEventListener('scroll', indicator.scrollHandler);
+                }
+                document.body.removeChild(indicator);
+            });
+
+            // Clear array
+            this.selectedElements = [];
+
+            // Hide highlight overlay if visible
+            this.highlightOverlay.style.display = 'none';
+            this.highlightedElement = null;
+
+            // Update the selection panel
+            UIManager.updateSelectionPanel(this.selectedElements);
+        },
+
+        /**
+         * Highlights a selected element from the panel
+         * @param {number} index - Index of the element to highlight
+         */
+        highlightSelectedElement(index) {
+            if (index < 0 || index >= this.selectedElements.length) return;
+
+            const element = this.selectedElements[index].element;
+            const rect = element.getBoundingClientRect();
+
+            // Update highlight overlay
+            this.highlightOverlay.style.top = (window.scrollY + rect.top) + 'px';
+            this.highlightOverlay.style.left = (window.scrollX + rect.left) + 'px';
+            this.highlightOverlay.style.width = rect.width + 'px';
+            this.highlightOverlay.style.height = rect.height + 'px';
+            this.highlightOverlay.style.display = 'block';
+
+            // Scroll element into view if needed
+            element.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center'
+            });
+
+            // Save reference to highlighted element
+            this.highlightedElement = element;
+
+            // Add scroll event handler to update overlay position
+            const updatePosition = () => {
+                if (!this.highlightedElement) return;
+
+                const newRect = this.highlightedElement.getBoundingClientRect();
+                this.highlightOverlay.style.top = (window.scrollY + newRect.top) + 'px';
+                this.highlightOverlay.style.left = (window.scrollX + newRect.left) + 'px';
+            };
+
+            // Remove previous scroll handler if exists
+            if (this.highlightScrollHandler) {
+                window.removeEventListener('scroll', this.highlightScrollHandler);
+            }
+
+            // Add new scroll handler
+            window.addEventListener('scroll', updatePosition);
+            this.highlightScrollHandler = updatePosition;
         }
     };
 
@@ -532,6 +1055,8 @@
          */
         init() {
             UIManager.createOverlay();
+            UIManager.createSelectionPanel();
+            SelectionManager.init();
             this.setupEventListeners();
             GM_registerMenuCommand('Toggle Element Highlighter', () => this.toggleHighlighter());
         },
@@ -544,6 +1069,20 @@
             document.addEventListener('click', (e) => this.handleClick(e));
             document.addEventListener('keydown', (e) => this.handleKeyPress(e), true);
             window.addEventListener('keydown', (e) => this.handleKeyPress(e), true);
+
+            // Setup selection panel button listeners
+            UIManager.downloadButton.addEventListener('click', () => {
+                if (SelectionManager.selectedElements.length > 0) {
+                    this.downloadSelectedElements();
+                } else {
+                    UIManager.showNotification('No elements selected for download');
+                }
+            });
+
+            UIManager.clearButton.addEventListener('click', () => {
+                SelectionManager.clearSelection();
+                UIManager.showNotification('Selection cleared');
+            });
         },
 
         /**
@@ -564,7 +1103,7 @@
             this.isActive = true;
             UIManager.overlay.style.display = 'block';
             document.body.style.cursor = 'crosshair';
-            UIManager.showNotification('Element highlighter activated');
+            UIManager.showNotification('Element highlighter activated (use Shift+Click to select multiple elements)');
 
             // Force focus to the window/document
             window.focus();
@@ -613,31 +1152,46 @@
          * @param {MouseEvent} e - The mouse event
          */
         handleClick(e) {
+            // Ignore clicks on UI elements
+            if (e.target.closest('#elementHighlighterPanel') ||
+                e.target.closest('.element-highlighter-indicator')) {
+                return;
+            }
+
             if (!this.isActive || !this.currentElement || this.isDownloading) return;
 
             e.preventDefault();
             e.stopPropagation();
 
-            this.isDownloading = true;
+            // Check if Shift key is pressed for multi-select
+            if (e.shiftKey) {
+                const added = SelectionManager.addElementToSelection(this.currentElement);
+                if (added) {
+                    UIManager.showNotification('Element added to selection');
+                }
+            } else {
+                // Single element selection and download
+                this.isDownloading = true;
 
-            const defaultFileName = document.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-            let userFileName = window.prompt('Enter file name:', defaultFileName);
+                const defaultFileName = document.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                let userFileName = window.prompt('Enter file name:', defaultFileName);
 
-            if (userFileName === null) {
+                if (userFileName === null) {
+                    this.isDownloading = false;
+                    return;
+                }
+
+                userFileName = userFileName.trim();
+                if (userFileName === '') userFileName = defaultFileName;
+
+                const downloadSuccess = Downloader.downloadElement(this.currentElement, userFileName);
+
+                if (downloadSuccess) {
+                    this.deactivateHighlighter();
+                }
+
                 this.isDownloading = false;
-                return;
             }
-
-            userFileName = userFileName.trim();
-            if (userFileName === '') userFileName = defaultFileName;
-
-            const downloadSuccess = Downloader.downloadElement(this.currentElement, userFileName);
-
-            if (downloadSuccess) {
-                this.deactivateHighlighter();
-            }
-
-            this.isDownloading = false;
         },
 
         /**
@@ -654,6 +1208,66 @@
                     e.stopPropagation(); // Stop event bubbling
                 }
             }
+
+            // Check for keyboard shortcuts when highlighter is active
+            if (this.isActive && !this.isDownloading) {
+                // 'C' key to clear selection
+                if (e.key === 'c' || e.key === 'C') {
+                    SelectionManager.clearSelection();
+                    UIManager.showNotification('Selection cleared');
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+
+                // 'D' key to download selected elements
+                if (e.key === 'd' || e.key === 'D') {
+                    if (SelectionManager.selectedElements.length > 0) {
+                        this.downloadSelectedElements();
+                    } else {
+                        UIManager.showNotification('No elements selected for download');
+                    }
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+            }
+        },
+
+        /**
+         * Downloads all selected elements
+         */
+        downloadSelectedElements() {
+            if (SelectionManager.selectedElements.length === 0) {
+                UIManager.showNotification('No elements selected for download');
+                return;
+            }
+
+            this.isDownloading = true;
+
+            const defaultFileName = document.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+            let userFileName = window.prompt('Enter file name for the download:', defaultFileName);
+
+            if (userFileName === null) {
+                this.isDownloading = false;
+                return;
+            }
+
+            userFileName = userFileName.trim();
+            if (userFileName === '') userFileName = defaultFileName;
+
+            // Extract elements from selection
+            const elements = SelectionManager.selectedElements.map(item => item.element);
+
+            const downloadSuccess = Downloader.downloadMultipleElements(elements, userFileName);
+
+            if (downloadSuccess) {
+                UIManager.showNotification('Selected elements downloaded successfully');
+                
+                // Clear the selection and deactivate highlighter to clean up
+                SelectionManager.clearSelection();
+                this.deactivateHighlighter();
+            }
+
+            this.isDownloading = false;
         }
     };
 
@@ -719,6 +1333,142 @@
             } catch (error) {
                 console.error('Download failed:', error);
                 UIManager.showNotification('Failed to download element');
+                return false;
+            }
+        },
+
+        /**
+         * Downloads multiple elements as a single HTML file
+         * @param {Array} elements - Array of elements to download
+         * @param {string} fileName - The name of the file
+         * @returns {boolean} - Whether the download was successful
+         */
+        downloadMultipleElements(elements, fileName) {
+            try {
+                // Create container for all elements
+                const container = document.createElement('div');
+                container.className = 'element-highlighter-container';
+
+                // Process each element
+                elements.forEach((element, index) => {
+                    // Create a clone to avoid modifying the original
+                    const clone = element.cloneNode(true);
+
+                    // Process all relative links in the clone
+                    ElementProcessor.processLinks(clone, window.location.href);
+
+                    // Process images (including SVG handling)
+                    const withImages = ElementProcessor.processImages(clone);
+
+                    // Process styles
+                    const { element: processed } = ElementProcessor.processStyles(withImages);
+
+                    // Create a wrapper for this element
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'element-highlighter-item';
+                    wrapper.style.margin = '20px 0';
+                    wrapper.style.padding = '20px';
+                    wrapper.style.border = '1px solid #ddd';
+                    wrapper.style.borderRadius = '5px';
+
+                    // Add element number header
+                    const header = document.createElement('div');
+                    header.className = 'element-highlighter-header';
+                    header.style.marginBottom = '10px';
+                    header.style.paddingBottom = '10px';
+                    header.style.borderBottom = '1px solid #eee';
+                    header.style.fontWeight = 'bold';
+                    header.textContent = `Element ${index + 1}: ${element.tagName.toLowerCase()}`;
+
+                    // If element has ID or class, add that info
+                    if (element.id || element.className) {
+                        const idClass = document.createElement('span');
+                        idClass.style.fontWeight = 'normal';
+                        idClass.style.fontSize = '0.9em';
+                        idClass.style.color = '#666';
+                        idClass.style.marginLeft = '5px';
+
+                        let idClassText = '';
+                        if (element.id) {
+                            idClassText += `#${element.id}`;
+                        }
+                        if (element.className) {
+                            const firstClass = element.className.split(' ')[0];
+                            idClassText += idClassText ? ` .${firstClass}` : `.${firstClass}`;
+                        }
+
+                        idClass.textContent = idClassText;
+                        header.appendChild(idClass);
+                    }
+
+                    wrapper.appendChild(header);
+                    wrapper.appendChild(processed);
+                    container.appendChild(wrapper);
+                });
+
+                // Get basic CSS
+                const basicCSS = `
+                    * { box-sizing: border-box; }
+                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                    .element-highlighter-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+                    .element-highlighter-item { break-inside: avoid; page-break-inside: avoid; }
+                    table { border-collapse: collapse; }
+                    td, th { padding: 8px; }
+                    img { max-width: 100%; height: auto; }
+                    @media print {
+                        .element-highlighter-header { background-color: #f5f5f5 !important; -webkit-print-color-adjust: exact; }
+                        .element-highlighter-item { border: 1px solid #ccc !important; page-break-inside: avoid; }
+                    }
+                `;
+
+                const content = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>${document.title} - Selected Elements</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        ${basicCSS}
+    </style>
+    <!--
+    Source URL: ${window.location.href}
+    Captured Elements: ${elements.length}
+    Capture Date: ${new Date().toISOString()}
+    Processing: Images, styles, and links converted to absolute URLs
+    -->
+</head>
+<body>
+    <div class="element-highlighter-container">
+        <h1 style="margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #eee;">
+            Selected Elements from ${document.title}
+        </h1>
+        <p style="color: #666; margin-bottom: 30px;">
+            Source: <a href="${window.location.href}">${window.location.href}</a><br>
+            Captured: ${new Date().toLocaleString()}<br>
+            Elements: ${elements.length}
+        </p>
+        ${container.innerHTML}
+    </div>
+</body>
+</html>`;
+
+                const blob = new Blob([content], { type: 'text/html;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+
+                const downloadLink = document.createElement('a');
+                downloadLink.href = url;
+                downloadLink.download = fileName.endsWith('.html') ? fileName : `${fileName}.html`;
+
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                URL.revokeObjectURL(url);
+
+                UIManager.showNotification(`${elements.length} elements downloaded with preserved styles`);
+                return true;
+            } catch (error) {
+                console.error('Download failed:', error);
+                UIManager.showNotification('Failed to download elements');
                 return false;
             }
         }

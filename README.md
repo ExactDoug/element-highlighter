@@ -7,8 +7,22 @@ A userscript that allows you to visually select and download elements from web p
 ### Element Selection
 - Visual highlighting of page elements on hover
 - Click to select specific elements
+- Shift+Click to select multiple elements
+- Selection panel showing all selected elements
+- Ability to remove individual elements from selection
 - Escape key to cancel selection
 - Ability to capture nested elements
+
+### Multiple Element Selection
+- Select multiple elements with Shift+Click
+- Visual indicators showing selected elements
+- Selection panel to manage selected elements
+- Download all selected elements as a single HTML file
+- Clear all selections with a single click
+- Keyboard shortcuts:
+  - `C`: Clear all selections
+  - `D`: Download selected elements
+  - `Escape`: Exit selection mode
 
 ### Image Processing
 - Converts relative image URLs to absolute
@@ -46,16 +60,25 @@ The script is organized into logical modules:
 ### UI Manager Module
 - Manages user interface elements
 - Handles overlay creation and styling
+- Creates and updates the selection panel
 - Displays notifications to the user
+
+### Selection Manager Module
+- Manages the list of selected elements
+- Handles adding and removing elements from selection
+- Creates visual indicators for selected elements
+- Highlights selected elements when requested
 
 ### Highlighter Module
 - Controls element highlighting functionality
 - Manages mouse and keyboard interactions
 - Toggles highlight mode on/off
+- Coordinates multiple element selection
 
 ### Downloader Module
 - Handles the actual element download
 - Creates standalone HTML with preserved styling
+- Downloads single elements or multiple elements
 - Generates downloadable blobs
 
 ## Installation
@@ -73,26 +96,44 @@ The script is organized into logical modules:
 
 ## Usage
 
+### Basic Usage
 1. Navigate to any webpage
 2. Click the userscript manager icon
 3. Select "Toggle Element Highlighter" from the menu
 4. Hover over elements to highlight them
-5. Click on an element to select it
-6. Enter a filename in the prompt
-7. Click OK to download the selected element as an HTML file
+5. Click on an element to select and download it
+
+### Multiple Element Selection
+1. Activate the Element Highlighter
+2. Hold Shift and click on elements to add them to selection
+3. Use the selection panel to:
+   - View all selected elements
+   - Remove specific elements
+   - Highlight individual elements
+   - Download all selected elements
+   - Clear all selections
 
 ### Keyboard Shortcuts
-- `Escape`: Cancel element selection mode
+- `Shift+Click`: Add element to selection
+- `C`: Clear all selections
+- `D`: Download all selected elements
+- `Escape`: Exit element selection mode
 
 ## Output Format
 
-The script generates a standalone HTML file containing:
+For single elements, the script generates a standalone HTML file containing:
 - The selected element with all nested content
 - Original page source URL in comments
 - Timestamp of capture
 - Simplified but functional CSS
 - Absolute URLs for all images
 - Preserved layout and formatting
+
+For multiple elements, the output includes:
+- All selected elements in a single HTML file
+- Elements separated with clear headers
+- Page metadata including source URL and capture time
+- Print-friendly styling for documentation or reports
 
 ## Development
 
@@ -108,8 +149,8 @@ Potential enhancements:
 - Additional image format support
 - Enhanced CSS preservation
 - Customizable style retention
-- Multiple element selection
 - Custom keyboard shortcuts
+- Settings panel for configuration
 
 ## Contributing
 
@@ -128,6 +169,7 @@ ExactDoug (http://exactpartners.com/)
 
 ## Version History
 
+- 0.5 - Multiple element selection with selection management panel
 - 0.4 - Code organization into logical modules with improved documentation
 - 0.3 - CSS handling and simplification
 - 0.2 - Enhanced image processing
