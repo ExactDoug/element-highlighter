@@ -1051,6 +1051,25 @@
         isDownloading: false,
 
         /**
+         * Prevents text selection on the entire page
+         * @param {boolean} prevent - Whether to prevent or allow text selection
+         */
+        preventTextSelection(prevent) {
+            if (prevent) {
+                document.body.style.userSelect = 'none';
+                document.body.style.webkitUserSelect = 'none';
+                document.body.style.msUserSelect = 'none';
+                document.body.style.mozUserSelect = 'none';
+            } else {
+                document.body.style.userSelect = '';
+                document.body.style.webkitUserSelect = '';
+                document.body.style.msUserSelect = '';
+                document.body.style.mozUserSelect = '';
+            }
+        },
+
+
+        /**
          * Initializes the highlighter
          */
         init() {
@@ -1069,6 +1088,22 @@
             document.addEventListener('click', (e) => this.handleClick(e));
             document.addEventListener('keydown', (e) => this.handleKeyPress(e), true);
             window.addEventListener('keydown', (e) => this.handleKeyPress(e), true);
+
+            // Add specific Shift key prevention
+            document.addEventListener('keydown', (e) => {
+                if (this.isActive && e.key === 'Shift') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+            }, true);
+
+            // Prevent context menu when highlighter is active
+            document.addEventListener('contextmenu', (e) => {
+                if (this.isActive) {
+                    e.preventDefault();
+                    return false;
+                }
+            }, true);
 
             // Setup selection panel button listeners
             UIManager.downloadButton.addEventListener('click', () => {
@@ -1092,6 +1127,7 @@
             this.isActive = false;
             UIManager.overlay.style.display = 'none';
             document.body.style.cursor = 'default';
+            this.preventTextSelection(false); // Re-enable text selection
             UIManager.showNotification('Element highlighter deactivated');
             window.focus(); // Ensure window has focus after deactivation
         },
@@ -1103,6 +1139,7 @@
             this.isActive = true;
             UIManager.overlay.style.display = 'block';
             document.body.style.cursor = 'crosshair';
+            this.preventTextSelection(true); // Prevent text selection
             UIManager.showNotification('Element highlighter activated (use Shift+Click to select multiple elements)');
 
             // Force focus to the window/document
@@ -1138,6 +1175,12 @@
         handleMouseMove(e) {
             if (!this.isActive || this.isDownloading) return;
 
+            // Prevent default behavior if Shift is pressed
+            if (e.shiftKey) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
             this.currentElement = e.target;
             const rect = this.currentElement.getBoundingClientRect();
 
@@ -1160,8 +1203,10 @@
 
             if (!this.isActive || !this.currentElement || this.isDownloading) return;
 
+            // Always prevent default behavior when highlighter is active
             e.preventDefault();
             e.stopPropagation();
+            e.stopImmediatePropagation();
 
             // Check if Shift key is pressed for multi-select
             if (e.shiftKey) {
@@ -1233,6 +1278,20 @@
         },
 
         /**
+         * Handle mousedown events to prevent text selection at the source
+         */
+        setupMouseDownHandler() {
+            document.addEventListener('mousedown', (e) => {
+                if (this.isActive) {
+                    if (e.shiftKey || e.target.closest('#elementHighlighterPanel') || e.target.closest('.element-highlighter-indicator')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }
+            }, true);  // Use capture phase
+        },
+
+        /**
          * Downloads all selected elements
          */
         downloadSelectedElements() {
@@ -1261,7 +1320,7 @@
 
             if (downloadSuccess) {
                 UIManager.showNotification('Selected elements downloaded successfully');
-                
+
                 // Clear the selection and deactivate highlighter to clean up
                 SelectionManager.clearSelection();
                 this.deactivateHighlighter();
@@ -1476,4 +1535,7 @@
 
     // Initialize the highlighter
     Highlighter.init();
+
+    // Setup additional mousedown handler
+    Highlighter.setupMouseDownHandler();
 })();
