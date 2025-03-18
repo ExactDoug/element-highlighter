@@ -333,6 +333,43 @@
                     finalHeight
                 });
 
+                // Enforce maximum dimensions of 40x40 pixels for all SVGs
+                const maxSize = 40;
+
+                // Get the current dimensions (either calculated or from the element)
+                let currentWidth = parseFloat(svg.style.width) || finalWidth || dimensions.rect.width || 40;
+                let currentHeight = parseFloat(svg.style.height) || finalHeight || dimensions.rect.height || 40;
+
+                // Remove any units if present
+                if (typeof currentWidth === 'string') {
+                    currentWidth = parseFloat(currentWidth);
+                }
+                if (typeof currentHeight === 'string') {
+                    currentHeight = parseFloat(currentHeight);
+                }
+
+                // Calculate new dimensions while preserving aspect ratio
+                let newWidth, newHeight;
+                const aspectRatio = currentWidth / currentHeight;
+
+                if (currentWidth > maxSize || currentHeight > maxSize) {
+                    if (aspectRatio > 1) {
+                        // Wider than tall
+                        newWidth = maxSize;
+                        newHeight = maxSize / aspectRatio;
+                    } else {
+                        // Taller than wide or square
+                        newHeight = maxSize;
+                        newWidth = maxSize * aspectRatio;
+                    }
+
+                    // Apply the size restriction
+                    svg.style.width = `${newWidth}px`;
+                    svg.style.height = `${newHeight}px`;
+                    svg.style.maxWidth = `${maxSize}px`;
+                    svg.style.maxHeight = `${maxSize}px`;
+                }
+
             } catch (e) {
                 console.error('SVG processing failed:', e);
             }
@@ -821,11 +858,30 @@
         highlightOverlay: null,
 
         /**
+         * Handler for highlight scroll events
+         */
+        highlightScrollHandler: null,
+
+        /**
+         * Map to store scroll handlers for each indicator
+         * This will help us manage multiple indicator positions
+         */
+        indicatorScrollHandlers: new Map(),
+
+        /**
+         * Observer for tracking element position changes
+         * (in case of dynamic page content)
+         */
+        resizeObserver: null,
+
+        /**
          * Initializes the selection manager
          */
         init() {
             // Create the highlight overlay for selection panel highlighting
             this.createHighlightOverlay();
+            // Initialize resize observer
+            this.initResizeObserver();
         },
 
         /**
@@ -835,12 +891,26 @@
             const overlay = document.createElement('div');
             overlay.style.position = 'fixed';
             overlay.style.pointerEvents = 'none';
+            overlay.style.transition = 'all 0.05s ease';  // Smooth transition when scrolling
             overlay.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
             overlay.style.border = '2px dashed #FFC107';
             overlay.style.display = 'none';
             overlay.style.zIndex = '9999';
             document.body.appendChild(overlay);
             this.highlightOverlay = overlay;
+        },
+
+        /**
+         * Initialize the ResizeObserver for tracking element movements
+         */
+        initResizeObserver() {
+            if (typeof ResizeObserver !== 'undefined') {
+                this.resizeObserver = new ResizeObserver(entries => {
+                    this.updateAllIndicatorPositions();
+                });
+            } else {
+                console.warn('ResizeObserver not supported in this browser. Some element tracking features may not work correctly.');
+            }
         },
 
         /**
@@ -885,23 +955,33 @@
 
             // Create indicator
             const indicator = document.createElement('div');
-            indicator.className = 'element-highlighter-indicator';
+            indicator.className = 'element-highlighter-indicator element-highlighter-indicator-' + id;
             indicator.dataset.forElement = id;
-            indicator.style.position = 'absolute';
+            indicator.style.position = 'absolute';  // Changed from fixed to absolute for proper scrolling
             indicator.style.top = (window.scrollY + rect.top) + 'px';
             indicator.style.left = (window.scrollX + rect.left) + 'px';
             indicator.style.width = rect.width + 'px';
             indicator.style.height = rect.height + 'px';
+            indicator.style.transition = 'all 0.05s ease';  // Smooth transition for scrolling
             indicator.style.border = '2px solid #28a745';
             indicator.style.pointerEvents = 'none';
             indicator.style.zIndex = '9998';
             indicator.style.boxSizing = 'border-box';
+
+            // Store original element's position data for smoother updates
+            indicator.dataset.elementTop = rect.top;
+            indicator.dataset.elementLeft = rect.left;
+            indicator.dataset.elementWidth = rect.width;
+            indicator.dataset.elementHeight = rect.height;
 
             // Add number badge
             const badge = document.createElement('div');
             badge.style.position = 'absolute';
             badge.style.top = '-10px';
             badge.style.right = '-10px';
+            badge.style.transform = 'translateZ(0)';  // Hardware acceleration
+            badge.style.willChange = 'transform';     // Hint for browser optimization
+            badge.className = 'element-highlighter-badge';
             badge.style.width = '20px';
             badge.style.height = '20px';
             badge.style.borderRadius = '50%';
@@ -918,17 +998,66 @@
             document.body.appendChild(indicator);
 
             // Update selection indicator when page scrolls
-            const updatePosition = () => {
+            const updateIndicatorPosition = () => {
                 const newRect = element.getBoundingClientRect();
-                indicator.style.top = (window.scrollY + newRect.top) + 'px';
-                indicator.style.left = (window.scrollX + newRect.left) + 'px';
+
+                // Only update if element is still in the DOM
+                if (document.body.contains(element)) {
+                    // Update dataset values for reference
+                    indicator.dataset.elementTop = newRect.top;
+                    indicator.dataset.elementLeft = newRect.left;
+                    indicator.dataset.elementWidth = newRect.width;
+                    indicator.dataset.elementHeight = newRect.height;
+
+                    // Calculate actual position accounting for scroll
+                    indicator.style.top = (window.scrollY + newRect.top) + 'px';
+                    indicator.style.left = (window.scrollX + newRect.left) + 'px';
+                    indicator.style.width = newRect.width + 'px';
+                    indicator.style.height = newRect.height + 'px';
+                }
             };
 
+            // Observe the element for size/position changes
+            if (this.resizeObserver) {
+                try {
+                    this.resizeObserver.observe(element);
+                } catch (e) {
+                    console.warn('Failed to observe element:', e);
+                }
+            }
+
             // Add scroll event listener
-            window.addEventListener('scroll', updatePosition);
+            window.addEventListener('scroll', updateIndicatorPosition);
 
             // Store scroll handler reference to remove it later
-            indicator.scrollHandler = updatePosition;
+            indicator.scrollHandler = updateIndicatorPosition;
+            this.indicatorScrollHandlers.set(id, updateIndicatorPosition);
+        },
+
+        /**
+         * Update positions of all indicators based on their elements
+         * Called by ResizeObserver and can be called manually
+         */
+        updateAllIndicatorPositions() {
+            this.selectedElements.forEach(item => {
+                const element = item.element;
+                const id = item.id;
+                const indicator = document.querySelector(`.element-highlighter-indicator[data-for-element="${id}"]`);
+
+                if (indicator && document.body.contains(element)) {
+                    const rect = element.getBoundingClientRect();
+
+                    // Update position with scroll offset
+                    indicator.style.top = (window.scrollY + rect.top) + 'px';
+                    indicator.style.left = (window.scrollX + rect.left) + 'px';
+                    indicator.style.width = rect.width + 'px';
+                    indicator.style.height = rect.height + 'px';
+
+                    // Store updated values
+                    indicator.dataset.elementTop = rect.top;
+                    indicator.dataset.elementLeft = rect.left;
+                }
+            });
         },
 
         /**
@@ -941,6 +1070,15 @@
             // Get element ID
             const id = this.selectedElements[index].id;
 
+            // Unobserve the element if using ResizeObserver
+            if (this.resizeObserver) {
+                try {
+                    this.resizeObserver.unobserve(this.selectedElements[index].element);
+                } catch (e) {
+                    // Element might already be gone from DOM
+                }
+            }
+
             // Remove indicator
             const indicator = document.querySelector(`.element-highlighter-indicator[data-for-element="${id}"]`);
             if (indicator) {
@@ -950,6 +1088,9 @@
                 }
                 document.body.removeChild(indicator);
             }
+
+            // Remove from handlers map
+            this.indicatorScrollHandlers.delete(id);
 
             // Remove from array
             this.selectedElements.splice(index, 1);
@@ -981,8 +1122,20 @@
                 document.body.removeChild(indicator);
             });
 
+            // Disconnect ResizeObserver to stop observing all elements
+            if (this.resizeObserver) {
+                try {
+                    this.resizeObserver.disconnect();
+                } catch (e) {
+                    // Observer might already be disconnected
+                }
+            }
+
             // Clear array
             this.selectedElements = [];
+
+            // Clear the handlers map
+            this.indicatorScrollHandlers.clear();
 
             // Hide highlight overlay if visible
             this.highlightOverlay.style.display = 'none';
@@ -998,6 +1151,12 @@
          */
         highlightSelectedElement(index) {
             if (index < 0 || index >= this.selectedElements.length) return;
+
+            // If element has been removed from the DOM, remove from selection
+            if (!document.body.contains(this.selectedElements[index].element)) {
+                this.removeElementFromSelection(index);
+                return;
+            }
 
             const element = this.selectedElements[index].element;
             const rect = element.getBoundingClientRect();
@@ -1025,6 +1184,8 @@
                 const newRect = this.highlightedElement.getBoundingClientRect();
                 this.highlightOverlay.style.top = (window.scrollY + newRect.top) + 'px';
                 this.highlightOverlay.style.left = (window.scrollX + newRect.left) + 'px';
+                this.highlightOverlay.style.width = newRect.width + 'px';
+                this.highlightOverlay.style.height = newRect.height + 'px';
             };
 
             // Remove previous scroll handler if exists
@@ -1049,6 +1210,7 @@
         isActive: false,
         currentElement: null,
         isDownloading: false,
+        _scrollThrottleTimeout: null,
 
         /**
          * Prevents text selection on the entire page
@@ -1068,7 +1230,6 @@
             }
         },
 
-
         /**
          * Initializes the highlighter
          */
@@ -1077,6 +1238,7 @@
             UIManager.createSelectionPanel();
             SelectionManager.init();
             this.setupEventListeners();
+            this.setupMouseDownHandler();
             GM_registerMenuCommand('Toggle Element Highlighter', () => this.toggleHighlighter());
         },
 
@@ -1105,6 +1267,19 @@
                 }
             }, true);
 
+            // Add a scroll event listener to update all indicator positions
+            window.addEventListener('scroll', () => {
+                if (this.isActive && SelectionManager.selectedElements.length > 0) {
+                    // Use throttling to improve performance
+                    if (!this._scrollThrottleTimeout) {
+                        this._scrollThrottleTimeout = setTimeout(() => {
+                            SelectionManager.updateAllIndicatorPositions();
+                            this._scrollThrottleTimeout = null;
+                        }, 16); // ~60fps
+                    }
+                }
+            }, { passive: true });
+
             // Setup selection panel button listeners
             UIManager.downloadButton.addEventListener('click', () => {
                 if (SelectionManager.selectedElements.length > 0) {
@@ -1118,6 +1293,22 @@
                 SelectionManager.clearSelection();
                 UIManager.showNotification('Selection cleared');
             });
+        },
+
+        /**
+         * Handle mousedown events to prevent text selection at the source
+         */
+        setupMouseDownHandler() {
+            document.addEventListener('mousedown', (e) => {
+                if (this.isActive) {
+                    if (e.shiftKey ||
+                        e.target.closest('#elementHighlighterPanel') ||
+                        e.target.closest('.element-highlighter-indicator')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }
+            }, true);  // Use capture phase
         },
 
         /**
@@ -1275,20 +1466,6 @@
                     e.stopPropagation();
                 }
             }
-        },
-
-        /**
-         * Handle mousedown events to prevent text selection at the source
-         */
-        setupMouseDownHandler() {
-            document.addEventListener('mousedown', (e) => {
-                if (this.isActive) {
-                    if (e.shiftKey || e.target.closest('#elementHighlighterPanel') || e.target.closest('.element-highlighter-indicator')) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }
-                }
-            }, true);  // Use capture phase
         },
 
         /**
@@ -1535,7 +1712,4 @@
 
     // Initialize the highlighter
     Highlighter.init();
-
-    // Setup additional mousedown handler
-    Highlighter.setupMouseDownHandler();
 })();
