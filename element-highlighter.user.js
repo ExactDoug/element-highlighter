@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Element Highlighter and Downloader
 // @namespace    http://exactpartners.com/
-// @version      0.5
-// @description  Highlight and download webpage elements with simplified CSS and multiple selection
+// @version      1.1
+// @description  Highlight and download webpage elements with simplified CSS, multiple selection, and scroll-wheel navigation
 // @author       ExactDoug
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -543,6 +543,22 @@
             overlay.style.zIndex = '10000';
             document.body.appendChild(overlay);
             this.overlay = overlay;
+            
+            // Add hierarchy level indicator
+            const indicator = document.createElement('div');
+            indicator.className = 'element-highlighter-hierarchy-indicator';
+            indicator.style.position = 'absolute';
+            indicator.style.top = '-25px';
+            indicator.style.right = '0';
+            indicator.style.backgroundColor = '#007bff';
+            indicator.style.color = 'white';
+            indicator.style.padding = '2px 6px';
+            indicator.style.borderRadius = '3px';
+            indicator.style.fontSize = '12px';
+            indicator.style.display = 'none';
+            overlay.appendChild(indicator);
+            this.hierarchyIndicator = indicator;
+            
             return overlay;
         },
 
@@ -997,13 +1013,49 @@
         },
 
         /**
+         * Find an element in the selection
+         * @param {Element} element - The element to find
+         * @returns {number} - The index of the element, or -1 if not found
+         */
+        findElementInSelection(element) {
+            // First try exact match (fastest)
+            const exactMatch = this.selectedElements.findIndex(item => item.element === element);
+            if (exactMatch !== -1) return exactMatch;
+            
+            // Then check if the element might be the same but a different reference
+            // This handles cases where DOM navigation created new references to the same visual element
+            return this.selectedElements.findIndex(item => {
+                // Check if elements have the same tag name, id, and similar position
+                if (item.element.tagName !== element.tagName) return false;
+                
+                // Check if they have the same ID (if any)
+                if (item.element.id && element.id && item.element.id === element.id) return true;
+                
+                // Check position and dimensions
+                const rect1 = item.element.getBoundingClientRect();
+                const rect2 = element.getBoundingClientRect();
+                
+                // If rectangles overlap significantly, likely the same element
+                const overlap = !(
+                    rect1.right < rect2.left || 
+                    rect1.left > rect2.right || 
+                    rect1.bottom < rect2.top || 
+                    rect1.top > rect2.bottom
+                );
+                
+                // If there's significant overlap AND same tag, it's likely the same visual element
+                return overlap && Math.abs(rect1.width - rect2.width) < 5 && Math.abs(rect1.height - rect2.height) < 5;
+            });
+        },
+
+        /**
          * Add an element to the selection
          * @param {Element} element - The element to add
          * @returns {boolean} - Whether the element was added successfully
          */
         addElementToSelection(element) {
             // Check if element already exists in selection
-            const exists = this.selectedElements.some(item => item.element === element);
+            const exists = this.findElementInSelection(element) !== -1;
             if (exists) {
                 UIManager.showNotification('Element already selected');
                 return false;
@@ -1366,6 +1418,16 @@
         currentElement: null,
         isDownloading: false,
         _scrollThrottleTimeout: null,
+        
+        /**
+         * Scroll wheel selection state
+         */
+        scrollWheelCounter: 0,     // Tracks number of scroll wheel movements
+        scrollThreshold: 2,        // Number of wheel movements to change selection (reduced from 3 to 2)
+        currentHierarchy: [],      // Keeps track of current element and its ancestors/descendants
+        hierarchyIndex: 0,         // Current position in the hierarchy
+        indicatorTimeout: null,    // Timeout for hiding hierarchy indicator
+        scrollNoticeShown: false,  // Whether scroll notice has been shown
 
         /**
          * Prevents text selection on the entire page
@@ -1405,10 +1467,11 @@
             document.addEventListener('click', (e) => this.handleClick(e));
             document.addEventListener('keydown', (e) => this.handleKeyPress(e), true);
             window.addEventListener('keydown', (e) => this.handleKeyPress(e), true);
+            document.addEventListener('wheel', (e) => this.handleMouseWheel(e), { passive: false });
 
-            // Add specific Shift key prevention
+            // Add specific Shift and Ctrl key prevention
             document.addEventListener('keydown', (e) => {
-                if (this.isActive && e.key === 'Shift') {
+                if (this.isActive && (e.key === 'Shift' || e.key === 'Control' || e.key === 'Meta')) {
                     e.preventDefault();
                     e.stopPropagation();
                 }
@@ -1456,7 +1519,7 @@
         setupMouseDownHandler() {
             document.addEventListener('mousedown', (e) => {
                 if (this.isActive) {
-                    if (e.shiftKey ||
+                    if (e.shiftKey || e.ctrlKey || e.metaKey ||
                         e.target.closest('#elementHighlighterPanel') ||
                         e.target.closest('.element-highlighter-indicator')) {
                         e.preventDefault();
@@ -1474,6 +1537,17 @@
             UIManager.overlay.style.display = 'none';
             document.body.style.cursor = 'default';
             this.preventTextSelection(false); // Re-enable text selection
+            
+            // Reset hierarchy state
+            this.currentHierarchy = [];
+            this.hierarchyIndex = 0;
+            this.scrollWheelCounter = 0;
+            this.scrollNoticeShown = false; // Reset scroll notice flag
+            
+            if (UIManager.hierarchyIndicator) {
+                UIManager.hierarchyIndicator.style.display = 'none';
+            }
+            
             UIManager.showNotification('Element highlighter deactivated');
             window.focus(); // Ensure window has focus after deactivation
         },
@@ -1486,7 +1560,17 @@
             UIManager.overlay.style.display = 'block';
             document.body.style.cursor = 'crosshair';
             this.preventTextSelection(true); // Prevent text selection
+            
+            // Show initial notification
             UIManager.showNotification('Element highlighter activated (use Shift+Click to select multiple elements)');
+            
+            // Add scroll wheel instructions with a slight delay
+            setTimeout(() => {
+                UIManager.showNotification('Use the mouse wheel to navigate elements (2 scrolls up = parent, 2 scrolls down = child)', 5000);
+            }, 2000);
+            
+            // Show scroll bar indicator
+            this.showScrollBarNotice();
 
             // Force focus to the window/document
             window.focus();
@@ -1499,6 +1583,96 @@
             document.body.appendChild(tempButton);
             tempButton.focus();
             document.body.removeChild(tempButton);
+        },
+        
+        /**
+         * Shows a temporary notice about using the scrollbar instead of the wheel
+         */
+        showScrollBarNotice() {
+            if (this.scrollNoticeShown) return;
+            
+            // Create the notice container
+            const notice = document.createElement('div');
+            notice.className = 'element-highlighter-scroll-notice';
+            notice.style.position = 'fixed';
+            notice.style.right = '10px';
+            notice.style.top = '50%';
+            notice.style.transform = 'translateY(-50%)';
+            notice.style.backgroundColor = 'rgba(255, 193, 7, 0.9)';
+            notice.style.color = '#000';
+            notice.style.padding = '15px';
+            notice.style.borderRadius = '5px';
+            notice.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
+            notice.style.zIndex = '10002';
+            notice.style.maxWidth = '250px';
+            notice.style.fontSize = '14px';
+            notice.style.lineHeight = '1.4';
+            notice.style.fontFamily = 'Arial, sans-serif';
+            notice.style.animation = 'highlighterNoticeFade 8s forwards';
+            
+            // Add an arrow pointing to scrollbar
+            const arrow = document.createElement('div');
+            arrow.style.position = 'absolute';
+            arrow.style.right = '-20px';
+            arrow.style.top = '50%';
+            arrow.style.transform = 'translateY(-50%)';
+            arrow.style.width = '0';
+            arrow.style.height = '0';
+            arrow.style.borderTop = '10px solid transparent';
+            arrow.style.borderBottom = '10px solid transparent';
+            arrow.style.borderLeft = '10px solid rgba(255, 193, 7, 0.9)';
+            
+            // Add text content
+            const text = document.createElement('div');
+            text.innerHTML = `
+                <strong>Important:</strong> 
+                <p>Mouse wheel is now used for element selection!</p>
+                <p>Please use the scrollbar to scroll the page.</p>
+                <p>Every 2 wheel movements up/down changes the selected element.</p>
+                <p>CTRL+Click will deselect an element.</p>
+            `;
+            
+            // Add close button
+            const closeBtn = document.createElement('button');
+            closeBtn.textContent = '×';
+            closeBtn.style.position = 'absolute';
+            closeBtn.style.top = '5px';
+            closeBtn.style.right = '5px';
+            closeBtn.style.background = 'none';
+            closeBtn.style.border = 'none';
+            closeBtn.style.fontSize = '16px';
+            closeBtn.style.cursor = 'pointer';
+            closeBtn.style.fontWeight = 'bold';
+            closeBtn.addEventListener('click', () => {
+                document.body.removeChild(notice);
+            });
+            
+            // Add animation style
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes highlighterNoticeFade {
+                    0% { opacity: 0; transform: translateY(-50%) translateX(30px); }
+                    10% { opacity: 1; transform: translateY(-50%) translateX(0); }
+                    80% { opacity: 1; transform: translateY(-50%) translateX(0); }
+                    100% { opacity: 0; transform: translateY(-50%) translateX(30px); }
+                }
+            `;
+            document.head.appendChild(style);
+            
+            // Assemble and append the notice
+            notice.appendChild(closeBtn);
+            notice.appendChild(text);
+            notice.appendChild(arrow);
+            document.body.appendChild(notice);
+            
+            // Auto-remove after 8 seconds (matches animation duration)
+            setTimeout(() => {
+                if (notice.parentNode) {
+                    document.body.removeChild(notice);
+                }
+            }, 8000);
+            
+            this.scrollNoticeShown = true;
         },
 
         /**
@@ -1513,6 +1687,94 @@
                 this.activateHighlighter();
             }
         },
+        
+        /**
+         * Builds an array of the element and its ancestors
+         * @param {Element} element - The starting element
+         * @return {Array} - Array of elements from current up to root
+         */
+        buildElementHierarchy(element) {
+            const hierarchy = [element];
+            let current = element;
+            
+            // Add all parents up to the document body
+            while (current.parentElement && current !== document.body) {
+                current = current.parentElement;
+                hierarchy.push(current);
+            }
+            
+            return hierarchy;
+        },
+
+        /**
+         * Gets valid child elements to navigate into
+         * @param {Element} element - Parent element to check
+         * @return {Array} - Array of valid child elements
+         */
+        getNavigableChildren(element) {
+            // Get direct children, filter out text nodes and insignificant elements
+            const children = Array.from(element.children).filter(child => {
+                // Skip tiny or invisible elements
+                const rect = child.getBoundingClientRect();
+                return (rect.width > 5 && rect.height > 5 &&
+                        window.getComputedStyle(child).display !== 'none');
+            });
+            
+            return children;
+        },
+        
+        /**
+         * Finds the most centered/prominent child element
+         * @param {Array} elements - Array of elements to choose from
+         * @return {Element} - The most centered element
+         */
+        findCenterElement(elements) {
+            // If only one element, return it
+            if (elements.length === 1) return elements[0];
+            
+            // Get parent dimensions and center point
+            const parentRect = this.currentElement.getBoundingClientRect();
+            const parentCenterX = parentRect.left + parentRect.width / 2;
+            const parentCenterY = parentRect.top + parentRect.height / 2;
+            
+            // Find element closest to center
+            let closestElement = elements[0];
+            let closestDistance = Infinity;
+            
+            elements.forEach(element => {
+                const rect = element.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                
+                // Calculate distance from parent center
+                const distance = Math.sqrt(
+                    Math.pow(centerX - parentCenterX, 2) +
+                    Math.pow(centerY - parentCenterY, 2)
+                );
+                
+                // Update closest if this is closer
+                if (distance < closestDistance) {
+                    closestDistance = distance;
+                    closestElement = element;
+                }
+            });
+            
+            return closestElement;
+        },
+        
+        /**
+         * Adds a visual pulse effect to the highlight overlay
+         */
+        pulseHighlight() {
+            UIManager.overlay.style.transition = 'all 0.2s ease-in-out';
+            UIManager.overlay.style.backgroundColor = 'rgba(0, 123, 255, 0.4)';
+            UIManager.overlay.style.borderWidth = '3px';
+            
+            setTimeout(() => {
+                UIManager.overlay.style.backgroundColor = 'rgba(0, 123, 255, 0.2)';
+                UIManager.overlay.style.borderWidth = '2px';
+            }, 200);
+        },
 
         /**
          * Handles mouse movement to highlight elements
@@ -1526,6 +1788,13 @@
                 e.preventDefault();
                 e.stopPropagation();
             }
+            
+            // Reset hierarchy when hovering over a new element
+            if (e.target !== this.currentElement) {
+                this.currentHierarchy = [];
+                this.hierarchyIndex = 0;
+                this.scrollWheelCounter = 0;
+            }
 
             this.currentElement = e.target;
             const rect = this.currentElement.getBoundingClientRect();
@@ -1536,6 +1805,97 @@
             UIManager.overlay.style.height = rect.height + 'px';
         },
 
+        /**
+         * Handles mouse wheel events to navigate DOM hierarchy
+         * @param {WheelEvent} e - The wheel event
+         */
+        handleMouseWheel(e) {
+            if (!this.isActive || this.isDownloading) return;
+            
+            // Prevent default scrolling behavior when hovering over an element
+            if (this.currentElement) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Track direction and update counter
+                const isScrollUp = e.deltaY < 0;
+                
+                // Update scroll counter
+                this.scrollWheelCounter += isScrollUp ? 1 : -1;
+                
+                // Check if we've reached the threshold to change selection
+                if (Math.abs(this.scrollWheelCounter) >= this.scrollThreshold) {
+                    // Determine direction (positive = up to parent, negative = down to child)
+                    const direction = this.scrollWheelCounter > 0 ? 1 : -1;
+                    
+                    // If this is our first hierarchy navigation, build the hierarchy
+                    if (!this.currentHierarchy.length) {
+                        this.currentHierarchy = this.buildElementHierarchy(this.currentElement);
+                        this.hierarchyIndex = 0; // Start at the current element
+                    }
+                    
+                    // Navigate hierarchy based on direction
+                    if (direction > 0) {
+                        // Move up to parent (if not at top already)
+                        if (this.hierarchyIndex < this.currentHierarchy.length - 1) {
+                            this.hierarchyIndex++;
+                            this.currentElement = this.currentHierarchy[this.hierarchyIndex];
+                        }
+                    } else {
+                        // Try to navigate down to a child
+                        if (this.hierarchyIndex > 0) {
+                            // Return to previous level
+                            this.hierarchyIndex--;
+                            this.currentElement = this.currentHierarchy[this.hierarchyIndex];
+                        } else {
+                            // Handle case for navigating into children
+                            const children = this.getNavigableChildren(this.currentElement);
+                            
+                            if (children.length > 0) {
+                                // Choose most prominent/centered child
+                                const centerElement = this.findCenterElement(children);
+                                
+                                // Create new hierarchy with this element as starting point
+                                this.currentElement = centerElement;
+                                this.currentHierarchy = this.buildElementHierarchy(this.currentElement);
+                                this.hierarchyIndex = 0;
+                            }
+                        }
+                    }
+                    
+                    // Update visual overlay
+                    const rect = this.currentElement.getBoundingClientRect();
+                    UIManager.overlay.style.top = window.scrollY + rect.top + 'px';
+                    UIManager.overlay.style.left = window.scrollX + rect.left + 'px';
+                    UIManager.overlay.style.width = rect.width + 'px';
+                    UIManager.overlay.style.height = rect.height + 'px';
+                    
+                    // Add pulsing animation to indicate selection change
+                    this.pulseHighlight();
+                    
+                    // Update hierarchy indicator if it exists
+                    if (UIManager.hierarchyIndicator) {
+                        const levelName = this.currentElement.tagName.toLowerCase();
+                        const levelId = this.currentElement.id ? `#${this.currentElement.id}` : '';
+                        const levelClass = this.currentElement.className ? 
+                            `.${this.currentElement.className.split(' ')[0]}` : '';
+                            
+                        UIManager.hierarchyIndicator.textContent = `${levelName}${levelId}${levelClass}`;
+                        UIManager.hierarchyIndicator.style.display = 'block';
+                        
+                        // Hide indicator after 5 seconds (extended from 2 seconds)
+                        clearTimeout(this.indicatorTimeout);
+                        this.indicatorTimeout = setTimeout(() => {
+                            UIManager.hierarchyIndicator.style.display = 'none';
+                        }, 5000);
+                    }
+                    
+                    // Reset counter
+                    this.scrollWheelCounter = 0;
+                }
+            }
+        },
+        
         /**
          * Handles clicks to select elements
          * @param {MouseEvent} e - The mouse event
@@ -1554,8 +1914,49 @@
             e.stopPropagation();
             e.stopImmediatePropagation();
 
+            // Check if Ctrl key is pressed for de-selection
+            if (e.ctrlKey) {
+                // Find if element exists in selection
+                let index = SelectionManager.findElementInSelection(this.currentElement);
+                
+                // If not found directly, also check if it's a parent of a selected element
+                if (index === -1) {
+                    // Get all selected elements that might be children of the current element
+                    const childIndex = SelectionManager.selectedElements.findIndex(item => 
+                        this.currentElement.contains(item.element)
+                    );
+                    
+                    if (childIndex !== -1) {
+                        index = childIndex;
+                    }
+                }
+                
+                // If still not found, check if a parent of the current element is selected
+                if (index === -1) {
+                    // Walk up the DOM tree to find a parent that might be selected
+                    let parent = this.currentElement.parentElement;
+                    while (parent && index === -1) {
+                        index = SelectionManager.findElementInSelection(parent);
+                        parent = parent.parentElement;
+                    }
+                }
+                
+                if (index !== -1) {
+                    // Remove the element
+                    SelectionManager.removeElementFromSelection(index);
+                    UIManager.showNotification('Element removed from selection');
+                } else {
+                    // Display a more helpful message
+                    const selectedCount = SelectionManager.selectedElements.length;
+                    if (selectedCount === 0) {
+                        UIManager.showNotification('No elements are currently selected');
+                    } else {
+                        UIManager.showNotification(`Element not in selection - try clicking directly on one of the ${selectedCount} highlighted element(s)`);
+                    }
+                }
+            }
             // Check if Shift key is pressed for multi-select
-            if (e.shiftKey) {
+            else if (e.shiftKey) {
                 const added = SelectionManager.addElementToSelection(this.currentElement);
                 if (added) {
                     UIManager.showNotification('Element added to selection');
@@ -1563,6 +1964,13 @@
             } else {
                 // Single element selection and download
                 this.isDownloading = true;
+                
+                // Get download options
+                const formatOption = window.confirm(
+                    "Choose download format:\n\n" +
+                    "• Click OK for Basic Formatting (preserves CSS, better for human review)\n" +
+                    "• Click Cancel for Data Only (strips CSS, optimized for AI processing)"
+                ) ? "basic" : "data-only";
 
                 const defaultFileName = document.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
                 let userFileName = window.prompt('Enter file name:', defaultFileName);
@@ -1575,7 +1983,7 @@
                 userFileName = userFileName.trim();
                 if (userFileName === '') userFileName = defaultFileName;
 
-                const downloadSuccess = Downloader.downloadElement(this.currentElement, userFileName);
+                const downloadSuccess = Downloader.downloadElement(this.currentElement, userFileName, formatOption);
 
                 if (downloadSuccess) {
                     this.deactivateHighlighter();
@@ -1634,6 +2042,13 @@
 
             this.isDownloading = true;
 
+            // Get download options
+            const formatOption = window.confirm(
+                "Choose download format:\n\n" +
+                "• Click OK for Basic Formatting (preserves CSS, better for human review)\n" +
+                "• Click Cancel for Data Only (strips CSS, optimized for AI processing)"
+            ) ? "basic" : "data-only";
+            
             const defaultFileName = document.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
             let userFileName = window.prompt('Enter file name for the download:', defaultFileName);
 
@@ -1648,7 +2063,7 @@
             // Extract elements from selection
             const elements = SelectionManager.selectedElements.map(item => item.element);
 
-            const downloadSuccess = Downloader.downloadMultipleElements(elements, userFileName);
+            const downloadSuccess = Downloader.downloadMultipleElements(elements, userFileName, formatOption);
 
             if (downloadSuccess) {
                 UIManager.showNotification('Selected elements downloaded successfully');
@@ -1671,9 +2086,10 @@
          * Downloads an element as an HTML file
          * @param {Element} element - The element to download
          * @param {string} fileName - The name of the file
+         * @param {string} formatOption - The formatting option ('basic' or 'data-only')
          * @returns {boolean} - Whether the download was successful
          */
-        downloadElement(element, fileName) {
+        downloadElement(element, fileName, formatOption = 'basic') {
             try {
                 // Create a clone to avoid modifying the original
                 const clone = element.cloneNode(true);
@@ -1683,11 +2099,26 @@
 
                 // Process images (including SVG handling)
                 const withImages = ElementProcessor.processImages(clone);
+                
+                let processed, basicCSS;
+                
+                if (formatOption === 'basic') {
+                    // Process styles (for basic formatting)
+                    const result = ElementProcessor.processStyles(withImages);
+                    processed = result.element;
+                    basicCSS = result.css;
+                } else {
+                    // For data-only, strip styles and scripts
+                    processed = this.stripFormattingAndScripts(withImages);
+                    basicCSS = '';
+                }
 
-                // Process styles
-                const { element: processed, css: basicCSS } = ElementProcessor.processStyles(withImages);
-
-                const content = `<!DOCTYPE html>
+                // Create page content based on format option
+                let content;
+                
+                if (formatOption === 'basic') {
+                    // Basic formatting with CSS
+                    content = `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -1700,12 +2131,33 @@
     Captured Element: ${element.tagName.toLowerCase()}
     Capture Date: ${new Date().toISOString()}
     Processing: Images, styles, and links converted to absolute URLs
+    Format: Basic formatting (CSS preserved)
     -->
 </head>
 <body>
     ${processed.outerHTML}
 </body>
 </html>`;
+                } else {
+                    // Data-only with no CSS
+                    content = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>${document.title}</title>
+    <!--
+    Source URL: ${window.location.href}
+    Captured Element: ${element.tagName.toLowerCase()}
+    Capture Date: ${new Date().toISOString()}
+    Processing: Images and links converted to absolute URLs, CSS removed, scripts removed
+    Format: Data-only (CSS stripped)
+    -->
+</head>
+<body>
+    ${processed.outerHTML}
+</body>
+</html>`;
+                }
 
                 const blob = new Blob([content], { type: 'text/html;charset=utf-8' });
                 const url = URL.createObjectURL(blob);
@@ -1719,7 +2171,11 @@
                 document.body.removeChild(downloadLink);
                 URL.revokeObjectURL(url);
 
-                UIManager.showNotification('Element downloaded with preserved styles and absolute links');
+                const formatMessage = formatOption === 'basic' ? 
+                    'Element downloaded with preserved styles and absolute links' :
+                    'Element downloaded in data-only format (CSS stripped) for AI processing';
+                
+                UIManager.showNotification(formatMessage);
                 return true;
             } catch (error) {
                 console.error('Download failed:', error);
@@ -1727,14 +2183,156 @@
                 return false;
             }
         },
+        
+        /**
+         * Strips formatting (CSS) and scripts from an element
+         * @param {Element} element - The element to process
+         * @returns {Element} - The processed element
+         */
+        stripFormattingAndScripts(element) {
+            const clone = element.cloneNode(true);
+            
+            // Remove all script elements
+            clone.querySelectorAll('script').forEach(script => {
+                script.remove();
+            });
+            
+            // Remove all style elements
+            clone.querySelectorAll('style').forEach(style => {
+                style.remove();
+            });
+            
+            // Remove all inline styles, font colors, and clean up whitespace
+            const removeInlineStyles = (el) => {
+                if (!el || !el.nodeType) return;
+                
+                // Process element nodes
+                if (el.nodeType === 1) { // Element node
+                    if (el.removeAttribute) {
+                        el.removeAttribute('style');
+                        el.removeAttribute('class'); // Classes are often used for styling
+                        
+                        // Explicitly remove color-related attributes
+                        if (el.hasAttribute('color')) {
+                            el.removeAttribute('color');
+                        }
+                        if (el.hasAttribute('bgcolor')) {
+                            el.removeAttribute('bgcolor');
+                        }
+                        if (el.hasAttribute('text')) {
+                            el.removeAttribute('text');
+                        }
+                        
+                        // Handle specific color-related attributes for different element types
+                        if (el.tagName === 'FONT') {
+                            el.removeAttribute('color');
+                            // If font element has no attributes and only contains text or empty nodes, 
+                            // consider replacing it with its children
+                            if (el.attributes.length === 0) {
+                                const hasOnlyTextOrEmpty = Array.from(el.childNodes).every(
+                                    child => child.nodeType === 3 || // Text node
+                                    (child.nodeType === 1 && child.textContent.trim() === '') // Empty element
+                                );
+                                if (hasOnlyTextOrEmpty && el.parentNode) {
+                                    // Replace font element with its children
+                                    while (el.firstChild) {
+                                        el.parentNode.insertBefore(el.firstChild, el);
+                                    }
+                                    el.parentNode.removeChild(el);
+                                    return; // Skip child processing since we moved them up
+                                }
+                            }
+                        }
+                        
+                        // Clean up empty space-only div/span elements that just add whitespace
+                        if ((el.tagName === 'DIV' || el.tagName === 'SPAN') && 
+                            el.textContent.trim() === '' && 
+                            !el.querySelector('img, svg, video, audio, canvas, iframe')) {
+                            // If it has no children or only has empty children, remove it
+                            if (el.children.length === 0 || 
+                                (el.children.length === 1 && el.children[0].tagName === 'BR')) {
+                                if (el.parentNode) {
+                                    el.parentNode.removeChild(el);
+                                    return; // Skip child processing
+                                }
+                            }
+                        }
+                        
+                        // Remove fixed dimensions to let content flow naturally
+                        el.removeAttribute('width');
+                        el.removeAttribute('height');
+                    }
+                    
+                    // Process children recursively
+                    if (el.children) {
+                        Array.from(el.children).forEach(child => {
+                            removeInlineStyles(child);
+                        });
+                    }
+                }
+            };
+            
+            removeInlineStyles(clone);
+            
+            // Also process any font tags to remove their colors
+            clone.querySelectorAll('font[color]').forEach(font => {
+                font.removeAttribute('color');
+            });
+            
+            // Remove consecutive <br> elements to reduce vertical spacing
+            const removeConsecutiveBrs = (el) => {
+                if (!el || !el.querySelectorAll) return;
+                
+                const brs = Array.from(el.querySelectorAll('br + br'));
+                brs.forEach(br => {
+                    if (br.parentNode) {
+                        br.parentNode.removeChild(br);
+                    }
+                });
+                
+                // Remove <br> at the end of elements that often create extra space
+                const containers = Array.from(el.querySelectorAll('div, p, td, li'));
+                containers.forEach(container => {
+                    const lastChild = container.lastChild;
+                    if (lastChild && lastChild.nodeName === 'BR') {
+                        container.removeChild(lastChild);
+                    }
+                });
+            };
+            
+            removeConsecutiveBrs(clone);
+            
+            // Add basic structure for document to read better
+            const basicCSS = document.createElement('style');
+            basicCSS.textContent = `
+                body { font-family: Arial, sans-serif; line-height: 1.5; margin: 20px; }
+                div, p { margin: 0; padding: 0; }
+                table { border-collapse: collapse; width: 100%; }
+                td, th { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                img { max-width: 100%; height: auto; }
+                br { display: block; margin-bottom: 0.5em; }
+            `;
+            
+            // Only add the style to the document if we're returning the complete element
+            // This won't get included in the HTML but helps with rendering internally
+            if (clone.tagName === 'HTML' || clone.tagName === 'BODY') {
+                const head = clone.querySelector('head');
+                if (head) {
+                    head.appendChild(basicCSS);
+                }
+            }
+            
+            return clone;
+        },
 
         /**
          * Downloads multiple elements as a single HTML file
          * @param {Array} elements - Array of elements to download
          * @param {string} fileName - The name of the file
+         * @param {string} formatOption - The formatting option ('basic' or 'data-only')
          * @returns {boolean} - Whether the download was successful
          */
-        downloadMultipleElements(elements, fileName) {
+        downloadMultipleElements(elements, fileName, formatOption = 'basic') {
             try {
                 // Create container for all elements
                 const container = document.createElement('div');
@@ -1751,33 +2349,53 @@
                     // Process images (including SVG handling)
                     const withImages = ElementProcessor.processImages(clone);
 
-                    // Process styles
-                    const { element: processed } = ElementProcessor.processStyles(withImages);
+                    let processed;
+                    if (formatOption === 'basic') {
+                        // Process styles (for basic formatting)
+                        const result = ElementProcessor.processStyles(withImages);
+                        processed = result.element;
+                    } else {
+                        // For data-only, strip styles and scripts
+                        processed = this.stripFormattingAndScripts(withImages);
+                    }
 
                     // Create a wrapper for this element
                     const wrapper = document.createElement('div');
-                    wrapper.className = 'element-highlighter-item';
-                    wrapper.style.margin = '20px 0';
-                    wrapper.style.padding = '20px';
-                    wrapper.style.border = '1px solid #ddd';
-                    wrapper.style.borderRadius = '5px';
+                    
+                    if (formatOption === 'basic') {
+                        wrapper.className = 'element-highlighter-item';
+                        wrapper.style.margin = '20px 0';
+                        wrapper.style.padding = '20px';
+                        wrapper.style.border = '1px solid #ddd';
+                        wrapper.style.borderRadius = '5px';
+                    } else {
+                        // In data-only mode, use minimal formatting
+                        wrapper.setAttribute('data-element-index', index + 1);
+                    }
 
                     // Add element number header
                     const header = document.createElement('div');
-                    header.className = 'element-highlighter-header';
-                    header.style.marginBottom = '10px';
-                    header.style.paddingBottom = '10px';
-                    header.style.borderBottom = '1px solid #eee';
-                    header.style.fontWeight = 'bold';
+                    
+                    if (formatOption === 'basic') {
+                        header.className = 'element-highlighter-header';
+                        header.style.marginBottom = '10px';
+                        header.style.paddingBottom = '10px';
+                        header.style.borderBottom = '1px solid #eee';
+                        header.style.fontWeight = 'bold';
+                    }
+                    
                     header.textContent = `Element ${index + 1}: ${element.tagName.toLowerCase()}`;
 
                     // If element has ID or class, add that info
                     if (element.id || element.className) {
                         const idClass = document.createElement('span');
-                        idClass.style.fontWeight = 'normal';
-                        idClass.style.fontSize = '0.9em';
-                        idClass.style.color = '#666';
-                        idClass.style.marginLeft = '5px';
+                        
+                        if (formatOption === 'basic') {
+                            idClass.style.fontWeight = 'normal';
+                            idClass.style.fontSize = '0.9em';
+                            idClass.style.color = '#666';
+                            idClass.style.marginLeft = '5px';
+                        }
 
                         let idClassText = '';
                         if (element.id) {
@@ -1797,22 +2415,39 @@
                     container.appendChild(wrapper);
                 });
 
-                // Get basic CSS
-                const basicCSS = `
-                    * { box-sizing: border-box; }
-                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                    .element-highlighter-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-                    .element-highlighter-item { break-inside: avoid; page-break-inside: avoid; }
-                    table { border-collapse: collapse; }
-                    td, th { padding: 8px; }
-                    img { max-width: 100%; height: auto; }
-                    @media print {
-                        .element-highlighter-header { background-color: #f5f5f5 !important; -webkit-print-color-adjust: exact; }
-                        .element-highlighter-item { border: 1px solid #ccc !important; page-break-inside: avoid; }
-                    }
-                `;
+                // Get CSS based on format option
+                let basicCSS = '';
+                
+                if (formatOption === 'basic') {
+                    // Full formatting with CSS
+                    basicCSS = `
+                        * { box-sizing: border-box; }
+                        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                        .element-highlighter-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+                        .element-highlighter-item { break-inside: avoid; page-break-inside: avoid; }
+                        table { border-collapse: collapse; }
+                        td, th { padding: 8px; }
+                        img { max-width: 100%; height: auto; }
+                        @media print {
+                            .element-highlighter-header { background-color: #f5f5f5 !important; -webkit-print-color-adjust: exact; }
+                            .element-highlighter-item { border: 1px solid #ccc !important; page-break-inside: avoid; }
+                        }
+                    `;
+                } else {
+                    // Minimal CSS for tables only in data-only mode
+                    basicCSS = `
+                        table { border-collapse: collapse; }
+                        td, th { padding: 4px; border: 1px solid #ddd; }
+                        img { max-width: 100%; }
+                    `;
+                }
 
-                const content = `<!DOCTYPE html>
+                // Generate HTML content based on format option
+                let content;
+                
+                if (formatOption === 'basic') {
+                    // Full formatting with CSS
+                    content = `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -1826,6 +2461,7 @@
     Captured Elements: ${elements.length}
     Capture Date: ${new Date().toISOString()}
     Processing: Images, styles, and links converted to absolute URLs
+    Format: Basic formatting (CSS preserved)
     -->
 </head>
 <body>
@@ -1842,6 +2478,38 @@
     </div>
 </body>
 </html>`;
+                } else {
+                    // Data-only with minimal CSS
+                    content = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>${document.title} - Selected Elements</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        ${basicCSS}
+    </style>
+    <!--
+    Source URL: ${window.location.href}
+    Captured Elements: ${elements.length}
+    Capture Date: ${new Date().toISOString()}
+    Processing: Images and links converted to absolute URLs, CSS removed, scripts removed
+    Format: Data-only (CSS stripped)
+    -->
+</head>
+<body>
+    <div>
+        <h1>Selected Elements from ${document.title}</h1>
+        <p>
+            Source: <a href="${window.location.href}">${window.location.href}</a><br>
+            Captured: ${new Date().toLocaleString()}<br>
+            Elements: ${elements.length}
+        </p>
+        ${container.innerHTML}
+    </div>
+</body>
+</html>`;
+                }
 
                 const blob = new Blob([content], { type: 'text/html;charset=utf-8' });
                 const url = URL.createObjectURL(blob);
@@ -1855,7 +2523,11 @@
                 document.body.removeChild(downloadLink);
                 URL.revokeObjectURL(url);
 
-                UIManager.showNotification(`${elements.length} elements downloaded with preserved styles`);
+                const formatMessage = formatOption === 'basic' ? 
+                    `${elements.length} elements downloaded with preserved styles` :
+                    `${elements.length} elements downloaded in data-only format (CSS stripped) for AI processing`;
+                
+                UIManager.showNotification(formatMessage);
                 return true;
             } catch (error) {
                 console.error('Download failed:', error);
